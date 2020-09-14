@@ -31,6 +31,7 @@ import hudson.BulkChange;
 import hudson.ExtensionList;
 import hudson.Util;
 import hudson.model.listeners.SaveableListener;
+import hudson.security.Permission;
 import hudson.util.FormApply;
 import hudson.util.FormValidation.CheckMethod;
 import hudson.util.ReflectionUtils;
@@ -39,6 +40,8 @@ import hudson.views.ListViewColumn;
 import jenkins.model.GlobalConfiguration;
 import jenkins.model.GlobalConfigurationCategory;
 import jenkins.model.Jenkins;
+import jenkins.security.RedactSecretJsonInErrorMessageSanitizer;
+import jenkins.util.io.OnMaster;
 import net.sf.json.JSONArray;
 import net.sf.json.JSONObject;
 import org.kohsuke.stapler.*;
@@ -50,12 +53,14 @@ import org.apache.commons.io.IOUtils;
 
 import static hudson.util.QuotedStringTokenizer.*;
 import static javax.servlet.http.HttpServletResponse.SC_NOT_FOUND;
+
 import javax.servlet.ServletException;
 import javax.servlet.RequestDispatcher;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -75,8 +80,9 @@ import java.lang.reflect.Field;
 import java.lang.reflect.ParameterizedType;
 import java.beans.Introspector;
 import java.util.IdentityHashMap;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
 
 /**
  * Metadata about a configurable instance.
@@ -115,6 +121,8 @@ import javax.annotation.Nonnull;
  * {@link Descriptor} can persist data just by storing them in fields.
  * However, it is the responsibility of the derived type to properly
  * invoke {@link #save()} and {@link #load()}.
+ * {@link #load()} is automatically invoked as a JSR-250 lifecycle method if derived class
+ * do implement {@link PersistentDescriptor}.
  *
  * <h2>Reflection Enhancement</h2>
  * {@link Descriptor} defines addition to the standard Java reflection
@@ -125,13 +133,13 @@ import javax.annotation.Nonnull;
  * @author Kohsuke Kawaguchi
  * @see Describable
  */
-public abstract class Descriptor<T extends Describable<T>> implements Saveable {
+public abstract class Descriptor<T extends Describable<T>> implements Saveable, OnMaster {
     /**
      * The class being described by this descriptor.
      */
     public transient final Class<? extends T> clazz;
 
-    private transient final Map<String,CheckMethod> checkMethods = new ConcurrentHashMap<String,CheckMethod>();
+    private transient final Map<String,CheckMethod> checkMethods = new ConcurrentHashMap<>(2);
 
     /**
      * Lazily computed list of properties on {@link #clazz} and on the descriptor itself.
@@ -193,17 +201,17 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
          * Returns {@link Descriptor} whose 'clazz' is the same as {@link #getItemType() the item type}.
          */
         public Descriptor getItemTypeDescriptor() {
-            return Jenkins.getInstance().getDescriptor(getItemType());
+            return Jenkins.get().getDescriptor(getItemType());
         }
 
         public Descriptor getItemTypeDescriptorOrDie() {
             Class it = getItemType();
             if (it == null) {
-                throw new AssertionError(clazz + " is not an array/collection type in " + displayName + ". See https://wiki.jenkins-ci.org/display/JENKINS/My+class+is+missing+descriptor");
+                throw new AssertionError(clazz + " is not an array/collection type in " + displayName + ". See https://jenkins.io/redirect/developer/class-is-missing-descriptor");
             }
-            Descriptor d = Jenkins.getInstance().getDescriptor(it);
+            Descriptor d = Jenkins.get().getDescriptor(it);
             if (d==null)
-                throw new AssertionError(it +" is missing its descriptor in "+displayName+". See https://wiki.jenkins-ci.org/display/JENKINS/My+class+is+missing+descriptor");
+                throw new AssertionError(it +" is missing its descriptor in "+displayName+". See https://jenkins.io/redirect/developer/class-is-missing-descriptor");
             return d;
         }
 
@@ -211,14 +219,14 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
          * Returns all the descriptors that produce types assignable to the property type.
          */
         public List<? extends Descriptor> getApplicableDescriptors() {
-            return Jenkins.getInstance().getDescriptorList(clazz);
+            return Jenkins.get().getDescriptorList(clazz);
         }
 
         /**
          * Returns all the descriptors that produce types assignable to the item type for a collection property.
          */
         public List<? extends Descriptor> getApplicableItemDescriptors() {
-            return Jenkins.getInstance().getDescriptorList(getItemType());
+            return Jenkins.get().getDescriptorList(getItemType());
         }
     }
 
@@ -227,7 +235,7 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
      *
      * @see #getHelpFile(String) 
      */
-    private transient final Map<String,HelpRedirect> helpRedirect = new HashMap<String,HelpRedirect>();
+    private transient final Map<String,HelpRedirect> helpRedirect = new HashMap<>(2);
 
     private static class HelpRedirect {
         private final Class<? extends Describable> owner;
@@ -240,7 +248,7 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
 
         private String resolve() {
             // the resolution has to be deferred to avoid ordering issue among descriptor registrations.
-            return Jenkins.getInstance().getDescriptor(owner).getHelpFile(fieldNameToRedirectTo);
+            return Jenkins.get().getDescriptor(owner).getHelpFile(fieldNameToRedirectTo);
         }
     }
 
@@ -301,7 +309,7 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
      * Historically some implementations returned null as a way of hiding the descriptor from the UI,
      * but this is generally managed by an explicit method such as {@code isEnabled} or {@code isApplicable}.
      */
-    @Nonnull
+    @NonNull
     public String getDisplayName() {
         return clazz.getSimpleName();
     }
@@ -410,7 +418,7 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
             throw new IllegalStateException(String.format("%s doesn't have the %s method for filling a drop-down list", getClass(), methodName));
 
         // build query parameter line by figuring out what should be submitted
-        List<String> depends = buildFillDependencies(method, new ArrayList<String>());
+        List<String> depends = buildFillDependencies(method, new ArrayList<>());
 
         if (!depends.isEmpty())
             attributes.put("fillDependsOn",Util.join(depends," "));
@@ -455,9 +463,9 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
     }
 
     /**
-     * Used by Jelly to abstract away the handlign of global.jelly vs config.jelly databinding difference.
+     * Used by Jelly to abstract away the handling of global.jelly vs config.jelly databinding difference.
      */
-    public @CheckForNull PropertyType getPropertyType(@Nonnull Object instance, @Nonnull String field) {
+    public @CheckForNull PropertyType getPropertyType(@NonNull Object instance, @NonNull String field) {
         // in global.jelly, instance==descriptor
         return instance==this ? getGlobalPropertyType(field) : getPropertyType(field);
     }
@@ -467,7 +475,7 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
      * @throws AssertionError in case the field cannot be found
      * @since 1.492
      */
-    public @Nonnull PropertyType getPropertyTypeOrDie(@Nonnull Object instance, @Nonnull String field) {
+    public @NonNull PropertyType getPropertyTypeOrDie(@NonNull Object instance, @NonNull String field) {
         PropertyType propertyType = getPropertyType(instance, field);
         if (propertyType != null) {
             return propertyType;
@@ -500,7 +508,7 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
      * Given the class, list up its {@link PropertyType}s from its public fields/getters.
      */
     private Map<String, PropertyType> buildPropertyTypes(Class<?> clazz) {
-        Map<String, PropertyType> r = new HashMap<String, PropertyType>();
+        Map<String, PropertyType> r = new HashMap<>();
         for (Field f : clazz.getFields())
             r.put(f.getName(),new PropertyType(f));
 
@@ -532,7 +540,7 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
      * Creates a configured instance from the submitted form.
      *
      * <p>
-     * Hudson only invokes this method when the user wants an instance of <tt>T</tt>.
+     * Hudson only invokes this method when the user wants an instance of {@code T}.
      * So there's no need to check that in the implementation.
      *
      * <p>
@@ -562,7 +570,7 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
      *      Signals a problem in the submitted form.
      * @since 1.145
      */
-    public T newInstance(@CheckForNull StaplerRequest req, @Nonnull JSONObject formData) throws FormException {
+    public T newInstance(@Nullable StaplerRequest req, @NonNull JSONObject formData) throws FormException {
         try {
             Method m = getClass().getMethod("newInstance", StaplerRequest.class);
 
@@ -595,7 +603,7 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
         } catch (NoSuchMethodException e) {
             throw new AssertionError(e); // impossible
         } catch (InstantiationException | IllegalAccessException | RuntimeException e) {
-            throw new Error("Failed to instantiate "+clazz+" from "+formData,e);
+            throw new Error("Failed to instantiate "+clazz+" from "+RedactSecretJsonInErrorMessageSanitizer.INSTANCE.sanitize(formData),e);
         }
     }
 
@@ -638,7 +646,13 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
             if (isApplicable(actualType, json)) {
                 LOGGER.log(Level.FINE, "switching to newInstance {0} {1}", new Object[] {actualType.getName(), json});
                 try {
-                    return Jenkins.getActiveInstance().getDescriptor(actualType).newInstance(Stapler.getCurrentRequest(), json);
+                    final Descriptor descriptor = Jenkins.get().getDescriptor(actualType);
+                    if (descriptor != null) {
+                        return descriptor.newInstance(Stapler.getCurrentRequest(), json);
+                    } else {
+                        LOGGER.log(Level.WARNING, "Descriptor not found. Falling back to default instantiation "
+                                + actualType.getName() + " " + json);
+                    }
                 } catch (Exception x) {
                     LOGGER.log(Level.WARNING, "falling back to default instantiation " + actualType.getName() + " " + json, x);
                     // If nested objects are not using newInstance, bindJSON will wind up throwing the same exception anyway,
@@ -658,7 +672,7 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
                 if (isApplicable(targetTypeErasure, json)) {
                     LOGGER.log(Level.FINE, "switching to newInstance {0} {1}", new Object[] {targetTypeErasure.getName(), json});
                     try {
-                        return Jenkins.getActiveInstance().getDescriptor(targetTypeErasure).newInstance(Stapler.getCurrentRequest(), json);
+                        return Jenkins.get().getDescriptor(targetTypeErasure).newInstance(Stapler.getCurrentRequest(), json);
                     } catch (Exception x) {
                         LOGGER.log(Level.WARNING, "falling back to default instantiation " + targetTypeErasure.getName() + " " + json, x);
                     }
@@ -678,7 +692,7 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
     private T verifyNewInstance(T t) {
         if (t!=null && t.getDescriptor()!=this) {
             // TODO: should this be a fatal error?
-            LOGGER.warning("Father of "+ t+" and its getDescriptor() points to two different instances. Probably malplaced @Extension. See http://hudson.361315.n4.nabble.com/Help-Hint-needed-Post-build-action-doesn-t-stay-activated-td2308833.html");
+            LOGGER.warning("Father of "+ t+" and its getDescriptor() points to two different instances. Probably misplaced @Extension. See http://hudson.361315.n4.nabble.com/Help-Hint-needed-Post-build-action-doesn-t-stay-activated-td2308833.html");
         }
         return t;
     }
@@ -702,9 +716,9 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
      *
      * <p>
      * This value is relative to the context root of Hudson, so normally
-     * the values are something like <tt>"/plugin/emma/help.html"</tt> to
-     * refer to static resource files in a plugin, or <tt>"/publisher/EmmaPublisher/abc"</tt>
-     * to refer to Jelly script <tt>abc.jelly</tt> or a method <tt>EmmaPublisher.doAbc()</tt>.
+     * the values are something like {@code "/plugin/emma/help.html"} to
+     * refer to static resource files in a plugin, or {@code "/publisher/EmmaPublisher/abc"}
+     * to refer to Jelly script {@code abc.jelly} or a method {@code EmmaPublisher.doAbc()}.
      *
      * @return
      *      null to indicate that there's no help.
@@ -785,7 +799,7 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
     /**
      * Invoked when the global configuration page is submitted.
      *
-     * Can be overriden to store descriptor-specific information.
+     * Can be overridden to store descriptor-specific information.
      *
      * @param json
      *      The JSON object that captures the configuration data for this {@link Descriptor}.
@@ -811,10 +825,24 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
      *
      * @return never null, always the same value for a given instance of {@link Descriptor}.
      *
-     * @since TODO, used to be in {@link GlobalConfiguration} before that.
+     * @since 2.0, used to be in {@link GlobalConfiguration} before that.
      */
-    public GlobalConfigurationCategory getCategory() {
+    public @NonNull GlobalConfigurationCategory getCategory() {
         return GlobalConfigurationCategory.get(GlobalConfigurationCategory.Unclassified.class);
+    }
+
+    /**
+     * Returns the permission type needed in order to access the {@link #getGlobalConfigPage()} for this descriptor.
+     * By default, requires {@link Jenkins#ADMINISTER} permission.
+     * For now this only applies to descriptors configured through the global ({@link jenkins.model.GlobalConfigurationCategory.Unclassified}) configuration.
+     * Override to return something different if appropriate. The only currently supported alternative return value is {@link Jenkins#MANAGE}.
+     *
+     * @return Permission required to globally configure this descriptor.
+     * @since 2.222
+     */
+    public @NonNull
+    Permission getRequiredGlobalConfigPagePermission() {
+        return Jenkins.ADMINISTER;
     }
 
     private String getViewPage(Class<?> clazz, String pageName, String defaultValue) {
@@ -843,8 +871,8 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
     }
 
     protected List<String> getPossibleViewNames(String baseName) {
-        List<String> names = new ArrayList<String>();
-        for (Facet f : WebApp.get(Jenkins.getInstance().servletContext).facets) {
+        List<String> names = new ArrayList<>();
+        for (Facet f : WebApp.get(Jenkins.get().servletContext).facets) {
             if (f instanceof JellyCompatibleFacet) {
                 JellyCompatibleFacet jcf = (JellyCompatibleFacet) f;
                 for (String ext : jcf.getScriptExtensions())
@@ -889,7 +917,7 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
     }
 
     protected XmlFile getConfigFile() {
-        return new XmlFile(new File(Jenkins.getInstance().getRootDir(),getId()+".xml"));
+        return new XmlFile(new File(Jenkins.get().getRootDir(),getId()+".xml"));
     }
 
     /**
@@ -899,11 +927,11 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
      *      null to indicate that this descriptor came from the core.
      */
     protected PluginWrapper getPlugin() {
-        return Jenkins.getInstance().getPluginManager().whichPlugin(clazz);
+        return Jenkins.get().getPluginManager().whichPlugin(clazz);
     }
 
     /**
-     * Serves <tt>help.html</tt> from the resource of {@link #clazz}.
+     * Serves {@code help.html} from the resource of {@link #clazz}.
      */
     public void doHelp(StaplerRequest req, StaplerResponse rsp) throws IOException, ServletException {
         String path = req.getRestOfPath();
@@ -930,12 +958,9 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
             if(url!=null) {
                 // TODO: generalize macro expansion and perhaps even support JEXL
                 rsp.setContentType("text/html;charset=UTF-8");
-                InputStream in = url.openStream();
-                try {
-                    String literal = IOUtils.toString(in,"UTF-8");
+                try (InputStream in = url.openStream()) {
+                    String literal = IOUtils.toString(in, StandardCharsets.UTF_8);
                     rsp.getWriter().println(Util.replaceMacro(literal, Collections.singletonMap("rootURL",req.getContextPath())));
-                } finally {
-                    IOUtils.closeQuietly(in);
                 }
                 return;
             }
@@ -972,20 +997,27 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
     }
 
     public static <T> List<T> toList( T... values ) {
-        return new ArrayList<T>(Arrays.asList(values));
+        return new ArrayList<>(Arrays.asList(values));
     }
 
     public static <T extends Describable<T>>
     Map<Descriptor<T>,T> toMap(Iterable<T> describables) {
-        Map<Descriptor<T>,T> m = new LinkedHashMap<Descriptor<T>,T>();
+        Map<Descriptor<T>,T> m = new LinkedHashMap<>();
         for (T d : describables) {
-            m.put(d.getDescriptor(),d);
+            Descriptor<T> descriptor;
+            try {
+                descriptor = d.getDescriptor();
+            } catch (Throwable x) {
+                LOGGER.log(Level.WARNING, null, x);
+                continue;
+            }
+            m.put(descriptor, d);
         }
         return m;
     }
 
     /**
-     * Used to build {@link Describable} instance list from &lt;f:hetero-list> tag.
+     * Used to build {@link Describable} instance list from {@code <f:hetero-list>} tag.
      *
      * @param req
      *      Request that represents the form submission.
@@ -1009,7 +1041,7 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
     List<T> newInstancesFromHeteroList(StaplerRequest req, Object formData,
                 Collection<? extends Descriptor<T>> descriptors) throws FormException {
 
-        List<T> items = new ArrayList<T>();
+        List<T> items = new ArrayList<>();
 
         if (formData!=null) {
             for (Object o : JSONArray.fromObject(formData)) {
@@ -1092,6 +1124,7 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
      * Finds a descriptor from a collection by its class name or ID.
      * @deprecated choose between {@link #findById} or {@link #findByDescribableClassName}
      */
+    @Deprecated
     public static @CheckForNull <T extends Descriptor> T find(Collection<? extends T> list, String string) {
         T d = findByClassName(list, string);
         if (d != null) {
@@ -1103,6 +1136,7 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
     /**
      * @deprecated choose between {@link #findById} or {@link #findByDescribableClassName}
      */
+    @Deprecated
     public static @CheckForNull Descriptor find(String className) {
         return find(ExtensionList.lookup(Descriptor.class),className);
     }
@@ -1138,7 +1172,7 @@ public abstract class Descriptor<T extends Describable<T>> implements Saveable {
                         .generateResponse(req, rsp, node);
             } else {
                 // for now, we can't really use the field name that caused the problem.
-                new Failure(getMessage()).generateResponse(req,rsp,node);
+                new Failure(getMessage()).generateResponse(req,rsp,node,getCause());
             }
         }
     }

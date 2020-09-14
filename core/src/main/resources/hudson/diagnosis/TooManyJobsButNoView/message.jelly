@@ -24,13 +24,13 @@ THE SOFTWARE.
 
 <?jelly escape-by-default='true'?>
 <j:jelly xmlns:j="jelly:core" xmlns:st="jelly:stapler" xmlns:d="jelly:define" xmlns:l="/lib/layout" xmlns:t="/lib/hudson" xmlns:f="/lib/form">
-  <div class="warning">
-    <form method="post" action="${rootURL}/${it.url}/act" name="${it.id}">
-      <div style="float:right">
+  <div id="tooManyJobsButNoView" class="alert alert-warning">
+    <l:isAdmin>
+      <form method="post" action="${rootURL}/${it.url}/act" name="${it.id}">
         <f:submit name="yes" value="${%Create a view now}"/>
         <f:submit name="no" value="${%Dismiss}"/>
-      </div>
-      ${%blurb}
-    </form>
+      </form>
+    </l:isAdmin>
+    ${%blurb}
   </div>
 </j:jelly>

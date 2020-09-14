@@ -23,16 +23,15 @@
  */
 package hudson.model;
 
-import hudson.model.ItemGroupMixIn;
-import hudson.model.View;
-import hudson.model.ViewGroup;
+import java.util.Locale;
 import org.kohsuke.stapler.export.Exported;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import edu.umd.cs.findbugs.annotations.NonNull;
 
 /**
  * Implements {@link ViewGroup} to be used as a "mix-in".
@@ -42,19 +41,20 @@ import java.util.List;
  * <ol>
  * <li>
  * Create three data fields in your class:
- * <pre>
+ * <pre>{@code
  * private String primaryView;
- * private CopyOnWriteArrayList&lt;View> views;
+ * private CopyOnWriteArrayList<View> views;
  * private ViewsTabBar viewsTabBar;
- * </pre>
+ * }</pre>
  * <li>
- * Define a transient field and store ViewGroupMixIn subype, then wire up getters and setters:
+ * Define a transient field and store ViewGroupMixIn subtype, then wire up getters and setters:
  * <pre>
  * private transient ViewGroupMixIn = new ViewGroupMixIn() {
- *     List&lt;View> views() { return views; }
+ *     List&lt;View&gt; views() { return views; }
  *     ...
  * }
  * </pre>
+ * </ol>
  * @author Kohsuke Kawaguchi
  * @see ItemGroupMixIn
  */
@@ -62,43 +62,87 @@ public abstract class ViewGroupMixIn {
     private final ViewGroup owner;
 
     /**
-     * Returns all the views. This list must be concurrently iterable.
+     * Returns all views in the group. This list must be modifiable and concurrently iterable.
      */
+    @NonNull
     protected abstract List<View> views();
+
+    /**
+     * Gets primary view of the mix-in.
+     * @return Name of the primary view, {@code null} if there is no primary one defined.
+     */
+    @CheckForNull
     protected abstract String primaryView();
+
+    /**
+     * Sets the primary view.
+     * @param newName Name of the primary view to be set.
+     *                {@code null} to make the primary view undefined.
+     */
     protected abstract void primaryView(String newName);
 
     protected ViewGroupMixIn(ViewGroup owner) {
         this.owner = owner;
     }
 
-    public void addView(View v) throws IOException {
+    public void addView(@NonNull View v) throws IOException {
         v.owner = owner;
         views().add(v);
         owner.save();
     }
 
-    public boolean canDelete(View view) {
+    public boolean canDelete(@NonNull View view) {
         return !view.isDefault();  // Cannot delete primary view
     }
 
-    public synchronized void deleteView(View view) throws IOException {
+    public synchronized void deleteView(@NonNull View view) throws IOException {
         if (views().size() <= 1)
             throw new IllegalStateException("Cannot delete last view");
         views().remove(view);
         owner.save();
     }
 
-    public View getView(String name) {
-        for (View v : views()) {
-            if(v.getViewName().equals(name))
-                return v;
+    /**
+     * Gets a view by the specified name.
+     * The method iterates through {@link ViewGroup}s if required.
+     * @param name Name of the view
+     * @return View instance or {@code null} if it is missing
+     */
+    @CheckForNull
+    public View getView(@CheckForNull String name) {
+        if (name == null) {
+            return null;
         }
-        if (name != null && !name.equals(primaryView())) {
+        //Top level views returned first if match
+        List<View> views = views();
+        for (View v : views) {
+            if (v.getViewName().equals(name)) {
+                return v;
+            }
+        }
+        for (View v : views) {
+            //getAllViews() cannot be used as it filters jobs by permission which is bad e.g. when trying to add a new job
+            if (v instanceof ViewGroup) {
+                View nestedView = ((ViewGroup) v).getView(name);
+                if (nestedView != null) {
+                    return nestedView;
+                }
+            }
+        }
+        if (!name.equals(primaryView())) {
             // Fallback to subview of primary view if it is a ViewGroup
             View pv = getPrimaryView();
             if (pv instanceof ViewGroup)
                 return ((ViewGroup)pv).getView(name);
+            if (pv instanceof AllView && AllView.DEFAULT_VIEW_NAME.equals(pv.name)) {
+                // JENKINS-38606: primary view is the default AllView, is somebody using an old link to localized form?
+                for (Locale l : Locale.getAvailableLocales()) {
+                    if (name.equals(Messages._Hudson_ViewName().toString(l))) {
+                        // why yes they are, let's keep that link working
+                        return pv;
+                    }
+                }
+            }
         }
         return null;
     }
@@ -109,22 +153,24 @@ public abstract class ViewGroupMixIn {
     @Exported
     public Collection<View> getViews() {
         List<View> orig = views();
-        List<View> copy = new ArrayList<View>(orig.size());
+        List<View> copy = new ArrayList<>(orig.size());
         for (View v : orig) {
             if (v.hasPermission(View.READ))
                 copy.add(v);
         }
-        Collections.sort(copy, View.SORTER);
+        copy.sort(View.SORTER);
         return copy;
     }
 
     /**
-     * Returns the primary {@link View} that renders the top-page of Hudson.
+     * Returns the primary {@link View} that renders the top-page of Hudson or
+     * {@code null} if there is no primary one defined.
      */
     @Exported
+    @CheckForNull
     public View getPrimaryView() {
         View v = getView(primaryView());
-        if(v==null) // fallback
+        if(v==null && !views().isEmpty()) // fallback
             v = views().get(0);
         return v;
     }

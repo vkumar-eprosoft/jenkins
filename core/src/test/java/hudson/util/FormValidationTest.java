@@ -23,7 +23,9 @@
  */
 package hudson.util;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 
 import java.util.Arrays;
 
@@ -99,10 +101,10 @@ public class FormValidationTest {
         assertTrue(ok_error.renderHtml().contains(ok.getMessage()));
         assertTrue(ok_error.renderHtml().contains(error.getMessage()));
 
-        final FormValidation warninig_error = aggregate(warning, error);
-        assertEquals(FormValidation.Kind.ERROR, warninig_error.kind);
-        assertTrue(warninig_error.renderHtml().contains(error.getMessage()));
-        assertTrue(warninig_error.renderHtml().contains(warning.getMessage()));
+        final FormValidation warning_error = aggregate(warning, error);
+        assertEquals(FormValidation.Kind.ERROR, warning_error.kind);
+        assertTrue(warning_error.renderHtml().contains(error.getMessage()));
+        assertTrue(warning_error.renderHtml().contains(warning.getMessage()));
     }
 
     private FormValidation aggregate(FormValidation... fvs) {

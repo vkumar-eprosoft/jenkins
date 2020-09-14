@@ -24,15 +24,20 @@
 
 package jenkins.model.queue;
 
+import hudson.model.Computer;
 import hudson.model.Executor;
+import hudson.model.ExecutorListener;
 import hudson.model.OneOffExecutor;
+import hudson.model.Queue.Executable;
 import hudson.model.Queue.FlyweightTask;
 import hudson.model.Resource;
 import hudson.model.ResourceActivity;
 import hudson.model.ResourceController;
 import hudson.model.ResourceList;
-import javax.annotation.CheckForNull;
-import javax.annotation.concurrent.GuardedBy;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import net.jcip.annotations.GuardedBy;
+import jenkins.model.Jenkins;
 import org.kohsuke.accmod.Restricted;
 import org.kohsuke.accmod.restrictions.NoExternalUse;
 
@@ -56,7 +61,7 @@ public abstract class AsynchronousExecution extends RuntimeException {
 
     /**
      * Initially null, and usually stays null.
-     * If {@link #completed} is called before {@link #setExecutor}, then either {@link #NULL} for success, or the error.
+     * If {@link #completed} is called before {@link #setExecutorWithoutCompleting}, then either {@link #NULL} for success, or the error.
      */
     @GuardedBy("this")
     private @CheckForNull Throwable result;
@@ -93,18 +98,34 @@ public abstract class AsynchronousExecution extends RuntimeException {
 
     /**
      * Obtains the associated executor.
+     * @return Associated Executor. May be {@code null} if {@link #setExecutorWithoutCompleting(hudson.model.Executor)} 
+     * has not been called yet.
      */
+    @CheckForNull
     public synchronized final Executor getExecutor() {
         return executor;
     }
 
+    /**
+     * Set the executor without notifying it about task completion.
+     * The caller <b>must</b> also call {@link #maybeComplete()}
+     * after releasing any problematic locks.
+     */
     @Restricted(NoExternalUse.class)
-    public synchronized final void setExecutor(Executor executor) {
-        assert this.executor==null;
-
+    public synchronized final void setExecutorWithoutCompleting(@NonNull Executor executor) {
+        assert this.executor == null;
         this.executor = executor;
-        if (result!=null) {
-            executor.completedAsynchronous( result!=NULL ? result : null );
+    }
+
+    /**
+     * If there is a pending completion notification, deliver it to the executor.
+     * Must be called after {@link #setExecutorWithoutCompleting(Executor)}.
+     */
+    @Restricted(NoExternalUse.class)
+    public synchronized final void maybeComplete() {
+        assert this.executor != null;
+        if (result != null) {
+            executor.completedAsynchronous(result != NULL ? result : null);
             result = null;
         }
     }

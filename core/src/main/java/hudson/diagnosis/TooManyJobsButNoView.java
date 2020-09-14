@@ -24,11 +24,13 @@
 package hudson.diagnosis;
 
 import hudson.model.AdministrativeMonitor;
+import hudson.security.Permission;
 import jenkins.model.Jenkins;
 import hudson.Extension;
 import org.jenkinsci.Symbol;
 import org.kohsuke.stapler.StaplerRequest;
 import org.kohsuke.stapler.StaplerResponse;
+import org.kohsuke.stapler.interceptor.RequirePOST;
 
 import java.io.IOException;
 
@@ -42,21 +44,38 @@ import java.io.IOException;
  */
 @Extension @Symbol("tooManyJobsButNoView")
 public class TooManyJobsButNoView extends AdministrativeMonitor {
+
+    @Override
+    public String getDisplayName() {
+        return Messages.TooManyJobsButNoView_DisplayName();
+    }
+
     public boolean isActivated() {
-        Jenkins h = Jenkins.getInstance();
-        return h.getViews().size()==1 && h.getItemMap().size()> THRESHOLD;
+        Jenkins j = Jenkins.get();
+        if (j.hasPermission(Jenkins.ADMINISTER)) {
+            return j.getViews().size() == 1 && j.getItemMap().size() > THRESHOLD;
+        }
+        // SystemRead
+        return j.getViews().size() == 1 && j.getItems().size() > THRESHOLD;
     }
 
     /**
      * Depending on whether the user said "yes" or "no", send him to the right place.
      */
+    @RequirePOST
     public void doAct(StaplerRequest req, StaplerResponse rsp) throws IOException {
+        Jenkins.get().checkPermission(Jenkins.ADMINISTER);
         if(req.hasParameter("no")) {
             disable(true);
             rsp.sendRedirect(req.getContextPath()+"/manage");
         } else {
             rsp.sendRedirect(req.getContextPath()+"/newView");
         }
+    }
+
+    @Override
+    public Permission getRequiredPermission() {
+        return Jenkins.SYSTEM_READ;
     }
 
     public static final int THRESHOLD = 16;

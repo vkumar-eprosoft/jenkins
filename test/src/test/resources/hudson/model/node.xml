@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <slave>
   <name>SlaveFromXML</name>
-  <description>XML slave description</description>
-  <remoteFS>/user/hudson/wokspace</remoteFS>
+  <description>XML agent description</description>
+  <remoteFS>/user/hudson/workspace</remoteFS>
   <numExecutors>42</numExecutors>
   <mode>NORMAL</mode>
   <retentionStrategy class="hudson.slaves.RetentionStrategy$1">

@@ -26,6 +26,7 @@ package hudson.tasks;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import hudson.Functions;
 import hudson.Launcher;
 import hudson.Util;
 import hudson.XmlFile;
@@ -39,11 +40,17 @@ import java.io.File;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 
 import static org.hamcrest.Matchers.hasSize;
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.Assert.assertTrue;
 
 import hudson.util.StreamTaskListener;
 import jenkins.model.Jenkins;
@@ -186,7 +193,7 @@ public class FingerprinterTest {
 
         upstreamBuild.delete();
 
-        Jenkins.getInstance().rebuildDependencyGraph();
+        Jenkins.get().rebuildDependencyGraph();
 
         List<AbstractProject> upstreamProjects = downstream.getUpstreamProjects();
         List<AbstractProject> downstreamProjects = upstream.getDownstreamProjects();
@@ -201,7 +208,7 @@ public class FingerprinterTest {
         j.assertBuildStatusSuccess(p.scheduleBuild2(0).get());
         j.assertBuildStatusSuccess(p.scheduleBuild2(0).get());
         
-        Jenkins.getInstance().rebuildDependencyGraph();
+        Jenkins.get().rebuildDependencyGraph();
 
         List<AbstractProject> upstreamProjects = p.getUpstreamProjects();
         List<AbstractProject> downstreamProjects = p.getDownstreamProjects();
@@ -252,8 +259,8 @@ public class FingerprinterTest {
         Collection<Fingerprint> fingerprints = action.getFingerprints().values();
         for (Fingerprint f: fingerprints) {
             assertTrue(f.getOriginal().is(upstream));
-            assertTrue(f.getOriginal().getName().equals(renamedProject1));
-            assertFalse(f.getOriginal().getName().equals(oldUpstreamName));
+            assertEquals(f.getOriginal().getName(), renamedProject1);
+            assertNotEquals(f.getOriginal().getName(), oldUpstreamName);
         }
         
         action = downstreamBuild.getAction(Fingerprinter.FingerprintAction.class);
@@ -261,8 +268,8 @@ public class FingerprinterTest {
         fingerprints = action.getFingerprints().values();
         for (Fingerprint f: fingerprints) {
             assertTrue(f.getOriginal().is(upstream));
-            assertTrue(f.getOriginal().getName().equals(renamedProject1));
-            assertFalse(f.getOriginal().getName().equals(oldUpstreamName));
+            assertEquals(f.getOriginal().getName(), renamedProject1);
+            assertNotEquals(f.getOriginal().getName(), oldUpstreamName);
         }
          
         // Verify that usage entry in fingerprint record is changed after
@@ -293,14 +300,18 @@ public class FingerprinterTest {
     @Issue("JENKINS-17125")
     @LocalData
     @Test public void actionSerialization() throws Exception {
-        FreeStyleProject job = j.jenkins.getItemByFullName("j", FreeStyleProject.class);
+        FreeStyleProject job = j.jenkins.getItemByFullName(Functions.isWindows() ? "j-windows" : "j", FreeStyleProject.class);
         assertNotNull(job);
         FreeStyleBuild build = job.getBuildByNumber(2);
         assertNotNull(build);
         Fingerprinter.FingerprintAction action = build.getAction(Fingerprinter.FingerprintAction.class);
         assertNotNull(action);
         assertEquals(build, action.getBuild());
-        assertEquals("{a=2d5fac981a2e865baf0e15db655c7d63}", action.getRecords().toString());
+        if (Functions.isWindows()) {
+            assertEquals("{a=603bc9e16cc05bdbc5e595969f42e3b8}", action.getRecords().toString());
+        } else {
+            assertEquals("{a=2d5fac981a2e865baf0e15db655c7d63}", action.getRecords().toString());
+        }
         j.assertBuildStatusSuccess(job.scheduleBuild2(0));
         job._getRuns().purgeCache(); // force build records to be reloaded
         build = job.getBuildByNumber(3);
@@ -309,7 +320,11 @@ public class FingerprinterTest {
         action = build.getAction(Fingerprinter.FingerprintAction.class);
         assertNotNull(action);
         assertEquals(build, action.getBuild());
-        assertEquals("{a=f31efcf9afe30617d6c46b919e702822}", action.getRecords().toString());
+        if (Functions.isWindows()) {
+            assertEquals("{a=a97a39fb51de0eee9fd908174dccc304}", action.getRecords().toString());
+        } else {
+            assertEquals("{a=f31efcf9afe30617d6c46b919e702822}", action.getRecords().toString());
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -326,13 +341,14 @@ public class FingerprinterTest {
         j.assertBuildStatusSuccess(p2.scheduleBuild2(0));
         j.assertBuildStatusSuccess(p3.scheduleBuild2(0));
 
-        Fingerprint f = j.jenkins._getFingerprint(Util.getDigestOf(singleContents[0]+"\n"));
+        Fingerprint f = j.jenkins._getFingerprint(Util.getDigestOf(singleContents[0]+System.lineSeparator()));
+        assertNotNull(f);
         assertEquals(3,f.getUsages().size());
 
         j.jenkins.rebuildDependencyGraph();
 
-        assertEquals(Arrays.asList(p1), p2.getUpstreamProjects());
-        assertEquals(Arrays.asList(p1), p3.getUpstreamProjects());
+        assertEquals(Collections.singletonList(p1), p2.getUpstreamProjects());
+        assertEquals(Collections.singletonList(p1), p3.getUpstreamProjects());
         assertEquals(new HashSet(Arrays.asList(p2,p3)), new HashSet(p1.getDownstreamProjects()));
 
         // discard the p3 records
@@ -343,8 +359,8 @@ public class FingerprinterTest {
 
         // records for p3 should have been deleted now
         assertEquals(2,f.getUsages().size());
-        assertEquals(Arrays.asList(p1), p2.getUpstreamProjects());
-        assertEquals(Arrays.asList(p2), p1.getDownstreamProjects());
+        assertEquals(Collections.singletonList(p1), p2.getUpstreamProjects());
+        assertEquals(Collections.singletonList(p2), p1.getDownstreamProjects());
 
 
         // do a new build in p2 #2 that points to a separate fingerprints
@@ -373,9 +389,15 @@ public class FingerprinterTest {
         StringBuilder targets = new StringBuilder();
         for (int i = 0; i < contents.length; i++) {
             if (project instanceof MatrixProject) {
-                ((MatrixProject)project).getBuildersList().add(new Shell("echo " + contents[i] + " > " + files[i]));
+                ((MatrixProject)project).getBuildersList().add(
+                        Functions.isWindows()
+                                ? new BatchFile("echo " + contents[i] + "> " + files[i])
+                                : new Shell("echo " + contents[i] + " > " + files[i]));
             } else {
-                ((FreeStyleProject)project).getBuildersList().add(new Shell("echo " + contents[i] + " > " + files[i]));                
+                ((FreeStyleProject)project).getBuildersList().add(
+                        Functions.isWindows()
+                                ? new BatchFile("echo " + contents[i] + "> " + files[i])
+                                : new Shell("echo " + contents[i] + " > " + files[i]));
             }
             
             targets.append(files[i]).append(',');

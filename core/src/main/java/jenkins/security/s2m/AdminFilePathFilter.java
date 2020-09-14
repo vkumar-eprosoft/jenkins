@@ -6,7 +6,7 @@ import jenkins.FilePathFilter;
 import jenkins.ReflectiveFilePathFilter;
 import jenkins.security.ChannelConfigurator;
 
-import javax.annotation.Nullable;
+import edu.umd.cs.findbugs.annotations.Nullable;
 import javax.inject.Inject;
 import java.io.File;
 
@@ -17,7 +17,7 @@ import java.io.File;
  * This class is just a glue, and the real logic happens inside {@link AdminWhitelistRule}
  *
  * @author Kohsuke Kawaguchi
- * @since 1.THU
+ * @since 1.587 / 1.580.1
  */
 public class AdminFilePathFilter extends ReflectiveFilePathFilter {
 

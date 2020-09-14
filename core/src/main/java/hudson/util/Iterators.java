@@ -23,7 +23,9 @@
  */
 package hudson.util;
 
+import com.google.common.annotations.Beta;
 import com.google.common.base.Predicates;
+import com.google.common.collect.ImmutableList;
 
 import java.util.Collections;
 import java.util.Iterator;
@@ -31,9 +33,11 @@ import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.ListIterator;
 import java.util.AbstractList;
-import java.util.Arrays;
 import java.util.Set;
 import java.util.HashSet;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import org.kohsuke.accmod.Restricted;
+import org.kohsuke.accmod.restrictions.NoExternalUse;
 
 /**
  * Varios {@link Iterator} implementations.
@@ -46,7 +50,7 @@ public class Iterators {
      * Returns the empty iterator.
      */
     public static <T> Iterator<T> empty() {
-        return Collections.<T>emptyList().iterator();
+        return Collections.emptyIterator();
     }
 
     /**
@@ -58,7 +62,7 @@ public class Iterators {
 
         protected FlattenIterator(Iterator<? extends T> core) {
             this.core = core;
-            cur = Collections.<U>emptyList().iterator();
+            cur = Collections.emptyIterator();
         }
 
         protected FlattenIterator(Iterable<? extends T> core) {
@@ -144,7 +148,7 @@ public class Iterators {
      * Remove duplicates from another iterator.
      */
     public static final class DuplicateFilterIterator<T> extends FilterIterator<T> {
-        private final Set<T> seen = new HashSet<T>();
+        private final Set<T> seen = new HashSet<>();
 
         public DuplicateFilterIterator(Iterator<? extends T> core) {
             super(core);
@@ -314,12 +318,13 @@ public class Iterators {
      * <p>
      * That is, this creates {A,B,C,D} from {A,B},{C,D}.
      */
+    @SafeVarargs
     public static <T> Iterable<T> sequence( final Iterable<? extends T>... iterables ) {
         return new Iterable<T>() {
             public Iterator<T> iterator() {
-                return new FlattenIterator<T,Iterable<? extends T>>(Arrays.asList(iterables)) {
+                return new FlattenIterator<T,Iterable<? extends T>>(ImmutableList.copyOf(iterables)) {
                     protected Iterator<T> expand(Iterable<? extends T> iterable) {
-                        return cast(iterable).iterator();
+                        return Iterators.<T>cast(iterable).iterator();
                     }
                 };
             }
@@ -331,7 +336,7 @@ public class Iterators {
      */
     public static <T> Iterator<T> removeDups(Iterator<T> iterator) {
         return new FilterIterator<T>(iterator) {
-            final Set<T> found = new HashSet<T>();
+            final Set<T> found = new HashSet<>();
             @Override
             protected boolean filter(T t) {
                 return found.add(t);
@@ -350,6 +355,7 @@ public class Iterators {
         };
     }
 
+    @SafeVarargs
     public static <T> Iterator<T> sequence(Iterator<? extends T>... iterators) {
         return com.google.common.collect.Iterators.concat(iterators);
     }
@@ -400,4 +406,20 @@ public class Iterators {
     public interface CountingPredicate<T> {
         boolean apply(int index, T input);
     }
+
+    /**
+     * Similar to {@link com.google.common.collect.Iterators#skip} except not {@link Beta}.
+     * @param iterator some iterator
+     * @param count a nonnegative count
+     */
+    @Restricted(NoExternalUse.class)
+    public static void skip(@NonNull Iterator<?> iterator, int count) {
+        if (count < 0) {
+            throw new IllegalArgumentException();
+        }
+        while (iterator.hasNext() && count-- > 0) {
+            iterator.next();
+        }
+    }
+
 }

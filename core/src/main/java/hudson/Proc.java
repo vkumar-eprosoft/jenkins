@@ -23,9 +23,11 @@
  */
 package hudson;
 
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import hudson.Launcher.ProcStarter;
 import hudson.model.TaskListener;
 import hudson.remoting.Channel;
+import hudson.util.ClassLoaderSanityThreadFactory;
 import hudson.util.DaemonThreadFactory;
 import hudson.util.ExceptionCatchingThreadFactory;
 import hudson.util.NamingThreadFactory;
@@ -49,6 +51,9 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import org.kohsuke.accmod.Restricted;
+import org.kohsuke.accmod.restrictions.NoExternalUse;
 
 /**
  * External process wrapper.
@@ -100,10 +105,11 @@ public abstract class Proc {
      * the child process to your {@link OutputStream} of choosing.
      *
      * @return
-     *      null unless {@link ProcStarter#readStdout()} is used to indicate
+     *      {@code null} unless {@link ProcStarter#readStdout()} is used to indicate
      *      that the caller intends to pump the stream by itself.
      * @since 1.399
      */
+    @CheckForNull
     public abstract InputStream getStdout();
 
     /**
@@ -113,10 +119,11 @@ public abstract class Proc {
      * the child process to your {@link OutputStream} of choosing.
      *
      * @return
-     *      null unless {@link ProcStarter#readStderr()} is used to indicate
+     *      {@code null} unless {@link ProcStarter#readStderr()} is used to indicate
      *      that the caller intends to pump the stream by itself.
      * @since 1.399
      */
+    @CheckForNull
     public abstract InputStream getStderr();
 
     /**
@@ -126,13 +133,14 @@ public abstract class Proc {
      * of your choosing to the child process.
      *
      * @return
-     *      null unless {@link ProcStarter#writeStdin()} is used to indicate
+     *      {@code null} unless {@link ProcStarter#writeStdin()} is used to indicate
      *      that the caller intends to pump the stream by itself.
      * @since 1.399
      */
+    @CheckForNull
     public abstract OutputStream getStdin();
 
-    private static final ExecutorService executor = Executors.newCachedThreadPool(new ExceptionCatchingThreadFactory(new NamingThreadFactory(new DaemonThreadFactory(), "Proc.executor")));
+    private static final ExecutorService executor = Executors.newCachedThreadPool(new ExceptionCatchingThreadFactory(new NamingThreadFactory(new ClassLoaderSanityThreadFactory(new DaemonThreadFactory()), "Proc.executor")));
     
     /**
      * Like {@link #join} but can be given a maximum time to wait.
@@ -157,7 +165,7 @@ public abstract class Proc {
                             kill();
                         }
                     } catch (InterruptedException | IOException | RuntimeException x) {
-                        x.printStackTrace(listener.error("Failed to join a process"));
+                        Functions.printStackTrace(x, listener.error("Failed to join a process"));
                     }
                 }
             });
@@ -208,6 +216,7 @@ public abstract class Proc {
          * @param err
          *      null to redirect stderr to stdout.
          */
+        @SuppressFBWarnings(value = "COMMAND_INJECTION", justification = "Command injection is the point of this old, barely used class.")
         public LocalProc(String[] cmd,String[] env,InputStream in,OutputStream out,OutputStream err,File workDir) throws IOException {
             this( calcName(cmd),
                   stderr(environment(new ProcessBuilder(cmd),env).directory(workDir), err==null || err== SELFPUMP_OUTPUT),
@@ -225,7 +234,7 @@ public abstract class Proc {
                 m.clear();
                 for (String e : env) {
                     int idx = e.indexOf('=');
-                    m.put(e.substring(0,idx),e.substring(idx+1,e.length()));
+                    m.put(e.substring(0,idx),e.substring(idx+1));
                 }
             }
             return pb;
@@ -237,6 +246,9 @@ public abstract class Proc {
             this.out = out;
             this.cookie = EnvVars.createCookie();
             procBuilder.environment().putAll(cookie);
+            if (procBuilder.directory() != null && !procBuilder.directory().exists()) {
+                throw new IOException(String.format("Process working directory '%s' doesn't exist!", procBuilder.directory().getAbsolutePath()));
+            }
             this.proc = procBuilder.start();
 
             InputStream procInputStream = proc.getInputStream();
@@ -313,15 +325,15 @@ public abstract class Proc {
 
             try {
                 int r = proc.waitFor();
-                // see http://wiki.jenkins-ci.org/display/JENKINS/Spawning+processes+from+build
+                // see https://jenkins.io/redirect/troubleshooting/process-leaked-file-descriptors
                 // problems like that shows up as infinite wait in join(), which confuses great many users.
                 // So let's do a timed wait here and try to diagnose the problem
-                if (copier!=null)   copier.join(10*1000);
-                if(copier2!=null)   copier2.join(10*1000);
+                if (copier!=null)   copier.join(TimeUnit.SECONDS.toMillis(10));
+                if(copier2!=null)   copier2.join(TimeUnit.SECONDS.toMillis(10));
                 if((copier!=null && copier.isAlive()) || (copier2!=null && copier2.isAlive())) {
                     // looks like handles are leaking.
                     // closing these handles should terminate the threads.
-                    String msg = "Process leaked file descriptors. See http://wiki.jenkins-ci.org/display/JENKINS/Spawning+processes+from+build for more information";
+                    String msg = "Process leaked file descriptors. See https://jenkins.io/redirect/troubleshooting/process-leaked-file-descriptors for more information";
                     Throwable e = new Exception().fillInStackTrace();
                     LOGGER.log(Level.WARNING,msg,e);
 
@@ -428,7 +440,7 @@ public abstract class Proc {
      * @deprecated as of 1.399. Replaced by {@link Launcher.RemoteLauncher.ProcImpl}
      */
     @Deprecated
-    public static final class RemoteProc extends Proc {
+    public static final class RemoteProc extends Proc implements ProcWithJenkins23271Patch {
         private final Future<Integer> process;
 
         public RemoteProc(Future<Integer> process) {
@@ -437,7 +449,14 @@ public abstract class Proc {
 
         @Override
         public void kill() throws IOException, InterruptedException {
-            process.cancel(true);
+            try {
+                process.cancel(true);
+            } finally {
+                if (this.isAlive()) { // Should never happen but this forces Proc to not be removed and early GC by escape analysis
+                    // TODO: Report exceptions if they happen?
+                    LOGGER.log(Level.WARNING, "Process {0} has not really finished after the kill() method execution", this);
+                }
+            }
         }
 
         @Override
@@ -445,8 +464,8 @@ public abstract class Proc {
             try {
                 return process.get();
             } catch (InterruptedException e) {
-                // aborting. kill the process
-                process.cancel(true);
+                LOGGER.log(Level.FINE, String.format("Join operation has been interrupted for the process %s. Killing the process", this), e);
+                kill();
                 throw e;
             } catch (ExecutionException e) {
                 if(e.getCause() instanceof IOException)
@@ -454,6 +473,10 @@ public abstract class Proc {
                 throw new IOException("Failed to join the process",e);
             } catch (CancellationException x) {
                 return -1;
+            } finally {
+                if (this.isAlive()) { // Should never happen but this forces Proc to not be removed and early GC by escape analysis
+                    LOGGER.log(Level.WARNING, "Process {0} has not really finished after the join() method completion", this);
+                }
             }
         }
 
@@ -483,4 +506,15 @@ public abstract class Proc {
      * Debug switch to have the thread display the process it's waiting for.
      */
     public static boolean SHOW_PID = false;
+    
+    /**
+    * An instance of {@link Proc}, which has an internal workaround for JENKINS-23271.
+    * It presumes that the instance of the object is guaranteed to be used after the {@link Proc#join()} call.
+    * See <a href="https://jenkins-ci.org/issue/23271">JENKINS-23271</a>
+    * @author Oleg Nenashev
+    */
+    @Restricted(NoExternalUse.class)
+    public interface ProcWithJenkins23271Patch {
+        // Empty marker interface
+    }
 }

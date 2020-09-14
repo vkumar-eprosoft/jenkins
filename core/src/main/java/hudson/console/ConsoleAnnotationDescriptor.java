@@ -27,7 +27,7 @@ import hudson.DescriptorExtensionList;
 import hudson.ExtensionPoint;
 import hudson.model.Descriptor;
 import jenkins.model.Jenkins;
-import hudson.util.TimeUnit2;
+import java.util.concurrent.TimeUnit;
 import org.kohsuke.stapler.StaplerRequest;
 import org.kohsuke.stapler.StaplerResponse;
 import org.kohsuke.stapler.WebMethod;
@@ -80,18 +80,18 @@ public abstract class ConsoleAnnotationDescriptor extends Descriptor<ConsoleNote
 
     @WebMethod(name="script.js")
     public void doScriptJs(StaplerRequest req, StaplerResponse rsp) throws IOException, ServletException {
-        rsp.serveFile(req, hasResource("/script.js"), TimeUnit2.DAYS.toMillis(1));
+        rsp.serveFile(req, hasResource("/script.js"), TimeUnit.DAYS.toMillis(1));
     }
 
     @WebMethod(name="style.css")
     public void doStyleCss(StaplerRequest req, StaplerResponse rsp) throws IOException, ServletException {
-        rsp.serveFile(req, hasResource("/style.css"), TimeUnit2.DAYS.toMillis(1));
+        rsp.serveFile(req, hasResource("/style.css"), TimeUnit.DAYS.toMillis(1));
     }
 
     /**
      * Returns all the registered {@link ConsoleAnnotationDescriptor} descriptors.
      */
     public static DescriptorExtensionList<ConsoleNote<?>,ConsoleAnnotationDescriptor> all() {
-        return (DescriptorExtensionList) Jenkins.getInstance().getDescriptorList(ConsoleNote.class);
+        return (DescriptorExtensionList) Jenkins.get().getDescriptorList(ConsoleNote.class);
     }
 }

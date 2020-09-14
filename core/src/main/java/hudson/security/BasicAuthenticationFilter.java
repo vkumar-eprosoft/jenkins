@@ -23,11 +23,17 @@
  */
 package hudson.security;
 
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import hudson.model.User;
 import jenkins.model.Jenkins;
 import hudson.util.Scrambler;
-import jenkins.security.ApiTokenProperty;
+import jenkins.security.SecurityListener;
+import org.acegisecurity.Authentication;
+import jenkins.security.BasicApiTokenHelper;
 import org.acegisecurity.context.SecurityContextHolder;
+import org.acegisecurity.userdetails.UserDetails;
+import org.kohsuke.stapler.StaplerRequest;
+import org.kohsuke.stapler.StaplerResponse;
 
 import javax.servlet.Filter;
 import javax.servlet.FilterChain;
@@ -43,25 +49,25 @@ import java.io.IOException;
 import java.net.URLEncoder;
 
 /**
- * Implements the dual authentcation mechanism.
+ * Implements the dual authentication mechanism.
  *
  * <p>
  * Jenkins supports both the HTTP basic authentication and the form-based authentication.
  * The former is for scripted clients, and the latter is for humans. Unfortunately,
- * because the servlet spec does not allow us to programatically authenticate users,
+ * because the servlet spec does not allow us to programmatically authenticate users,
  * we need to rely on some hack to make it work, and this is the class that implements
  * that hack.
  *
  * <p>
  * When an HTTP request arrives with an HTTP basic auth header, this filter detects
- * that and emulate an invocation of <tt>/j_security_check</tt>
+ * that and emulate an invocation of {@code /j_security_check}
  * (see <a href="http://mail-archives.apache.org/mod_mbox/tomcat-users/200105.mbox/%3C9005C0C9C85BD31181B20060085DAC8B10C8EF@tuvi.andmevara.ee%3E">this page</a> for the original technique.)
  *
  * <p>
  * This causes the container to perform authentication, but there's no way
  * to find out whether the user has been successfully authenticated or not.
  * So to find this out, we then redirect the user to
- * {@link jenkins.model.Jenkins#doSecured(StaplerRequest, StaplerResponse) <tt>/secured/...</tt> page}.
+ * {@link jenkins.model.Jenkins#doSecured(StaplerRequest, StaplerResponse) {@code /secured/...} page}.
  *
  * <p>
  * The handler of the above URL checks if the user is authenticated,
@@ -69,16 +75,16 @@ import java.net.URLEncoder;
  * redirected back to the original URL, where the request is served.
  *
  * <p>
- * So all in all, the redirection works like <tt>/abc/def</tt> -> <tt>/secured/abc/def</tt>
- * -> <tt>/abc/def</tt>.
+ * So all in all, the redirection works like {@code /abc/def} → {@code /secured/abc/def}
+ * → {@code /abc/def}.
  *
  * <h2>Notes</h2>
  * <ul>
  * <li>
- * The technique of getting a request dispatcher for <tt>/j_security_check</tt> may not
+ * The technique of getting a request dispatcher for {@code /j_security_check} may not
  * work for all containers, but so far that seems like the only way to make this work.
  * <li>
- * This A->B->A redirect is a cyclic redirection, so we need to watch out for clients
+ * This A → B → A redirect is a cyclic redirection, so we need to watch out for clients
  * that detect this as an error.
  * </ul> 
  *
@@ -99,7 +105,7 @@ public class BasicAuthenticationFilter implements Filter {
 
         String path = req.getServletPath();
         if(authorization==null || req.getUserPrincipal() !=null || path.startsWith("/secured/")
-        || !Jenkins.getInstance().isUseSecurity()) {
+        || !Jenkins.get().isUseSecurity()) {
             // normal requests, or security not enabled
             if(req.getUserPrincipal()!=null) {
                 // before we route this request, integrate the container authentication
@@ -132,13 +138,15 @@ public class BasicAuthenticationFilter implements Filter {
             return;
         }
 
-        {// attempt to authenticate as API token
-            // create is true as the user may not have been saved and the default api token may be in use.
-            // validation of the user will be performed against the underlying realm in impersonate.
-            User u = User.getById(username, true);
-            ApiTokenProperty t = u.getProperty(ApiTokenProperty.class);
-            if (t!=null && t.matchesPassword(password)) {
-                SecurityContextHolder.getContext().setAuthentication(u.impersonate());
+        {
+            User u = BasicApiTokenHelper.isConnectingUsingApiToken(username, password);
+            if(u != null){
+                UserDetails userDetails = u.getUserDetailsForImpersonation();
+                Authentication auth = u.impersonate(userDetails);
+
+                SecurityListener.fireAuthenticated(userDetails);
+
+                SecurityContextHolder.getContext().setAuthentication(auth);
                 try {
                     chain.doFilter(request,response);
                 } finally {
@@ -155,13 +163,18 @@ public class BasicAuthenticationFilter implements Filter {
             path += '?'+q;
 
         // prepare a redirect
-        rsp.setStatus(HttpServletResponse.SC_MOVED_TEMPORARILY);
-        rsp.setHeader("Location",path);
+        prepareRedirect(rsp, path);
 
         // ... but first let the container authenticate this request
         RequestDispatcher d = servletContext.getRequestDispatcher("/j_security_check?j_username="+
             URLEncoder.encode(username,"UTF-8")+"&j_password="+URLEncoder.encode(password,"UTF-8"));
         d.include(req,rsp);
+    }
+
+    @SuppressFBWarnings(value = "UNVALIDATED_REDIRECT", justification = "Redirect is validated as processed.")
+    private void prepareRedirect(HttpServletResponse rsp, String path) {
+        rsp.setStatus(HttpServletResponse.SC_MOVED_TEMPORARILY);
+        rsp.setHeader("Location",path);
     }
 
     //public void doFilter(ServletRequest request, ServletResponse response, FilterChain chain) throws IOException, ServletException {

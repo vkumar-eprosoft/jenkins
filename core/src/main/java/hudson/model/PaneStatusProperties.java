@@ -13,7 +13,7 @@ import org.kohsuke.stapler.Stapler;
 
 public class PaneStatusProperties extends UserProperty implements Saveable {
 	
-	private final PersistedList<String> collapsed = new PersistedList<String>(this);
+	private final PersistedList<String> collapsed = new PersistedList<>(this);
 	
 	private static final PaneStatusProperties FALLBACK = new PaneStatusPropertiesSessionFallback();
 	
@@ -25,7 +25,7 @@ public class PaneStatusProperties extends UserProperty implements Saveable {
 	 * @param paneId panel name
 	 * @return the actual state of panel
 	 */
-	public boolean toggleCollapsed(String paneId) throws IOException {
+	public boolean toggleCollapsed(String paneId) {
 		if (collapsed.contains(paneId)) {
 			collapsed.remove(paneId);
 			return false;
@@ -61,7 +61,7 @@ public class PaneStatusProperties extends UserProperty implements Saveable {
 	
 	private static class PaneStatusPropertiesSessionFallback extends PaneStatusProperties {
 		
-		private final String attribute = "jenkins_pane_%s_collapsed";
+		private final static String attribute = "jenkins_pane_%s_collapsed";
 		
 		@Override
 		public boolean isCollapsed(String paneId) {

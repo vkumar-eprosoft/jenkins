@@ -26,23 +26,24 @@ package hudson.cli;
 import hudson.AbortException;
 import hudson.Extension;
 import hudson.model.Computer;
+import hudson.model.ComputerSet;
 import hudson.util.EditDistance;
 import jenkins.model.Jenkins;
 import org.kohsuke.args4j.Argument;
 import org.kohsuke.args4j.Option;
 
-import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.logging.Logger;
 
 /**
+ * CLI Command, which disconnects nodes.
  * @author pjanouse
- * @since TODO
+ * @since 2.4
  */
 @Extension
 public class DisconnectNodeCommand extends CLICommand {
-    @Argument(metaVar = "NAME", usage = "Slave name, or empty string for master; comama-separated list is supported", required = true, multiValued = true)
+    @Argument(metaVar = "NAME", usage = "Slave name, or empty string for master; comma-separated list is supported", required = true, multiValued = true)
     private List<String> nodes;
 
     @Option(name = "-m", usage = "Record the reason about why you are disconnecting this node")
@@ -58,27 +59,21 @@ public class DisconnectNodeCommand extends CLICommand {
     @Override
     protected int run() throws Exception {
         boolean errorOccurred = false;
-        final Jenkins jenkins = Jenkins.getActiveInstance();
+        final Jenkins jenkins = Jenkins.get();
 
-        final HashSet<String> hs = new HashSet<String>();
-        hs.addAll(nodes);
+        final HashSet<String> hs = new HashSet<>(nodes);
 
         List<String> names = null;
 
         for (String node_s : hs) {
-            Computer computer = null;
+            Computer computer;
 
             try {
                 computer = jenkins.getComputer(node_s);
 
                 if (computer == null) {
                     if (names == null) {
-                        names = new ArrayList<String>();
-                        for (Computer c : jenkins.getComputers()) {
-                            if (!c.getName().isEmpty()) {
-                                names.add(c.getName());
-                            }
-                        }
+                        names = ComputerSet.getComputerNames();
                     }
                     String adv = EditDistance.findNearest(node_s, names);
                     throw new IllegalArgumentException(adv == null ?
@@ -92,14 +87,14 @@ public class DisconnectNodeCommand extends CLICommand {
                     throw e;
                 }
 
-                stderr.println(String.format(node_s + ": " + e.getMessage()));
+                stderr.println(node_s + ": " + e.getMessage());
                 errorOccurred = true;
                 continue;
             }
         }
 
         if (errorOccurred) {
-            throw new AbortException("Error occured while performing this command, see previous stderr output.");
+            throw new AbortException(CLI_LISTPARAM_SUMMARY_ERROR_TEXT);
         }
         return 0;
     }

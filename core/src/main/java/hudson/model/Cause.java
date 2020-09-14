@@ -31,6 +31,8 @@ import hudson.console.ModelHyperlinkNote;
 import hudson.diagnosis.OldDataMonitor;
 import hudson.util.XStream2;
 import jenkins.model.Jenkins;
+import org.kohsuke.accmod.Restricted;
+import org.kohsuke.accmod.restrictions.DoNotUse;
 import org.kohsuke.stapler.export.Exported;
 import org.kohsuke.stapler.export.ExportedBean;
 import com.thoughtworks.xstream.converters.UnmarshallingContext;
@@ -39,13 +41,13 @@ import java.io.IOException;
 import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import edu.umd.cs.findbugs.annotations.NonNull;
 
 /**
  * Cause object base class.  This class hierarchy is used to keep track of why
  * a given build was started. This object encapsulates the UI rendering of the cause,
- * as well as providing more useful information in respective subypes.
+ * as well as providing more useful information in respective subtypes.
  *
  * The Cause object is connected to a build via the {@link CauseAction} object.
  *
@@ -74,7 +76,7 @@ public abstract class Cause {
      * Called when the cause is registered.
      * @since 1.568
      */
-    public void onAddedTo(@Nonnull Run build) {
+    public void onAddedTo(@NonNull Run build) {
         if (build instanceof AbstractBuild) {
             onAddedTo((AbstractBuild) build);
         }
@@ -93,13 +95,13 @@ public abstract class Cause {
      * this ought to be {@code transient}.
      * @since 1.568
      */
-    public void onLoad(@Nonnull Run<?,?> build) {
+    public void onLoad(@NonNull Run<?,?> build) {
         if (build instanceof AbstractBuild) {
             onLoad((AbstractBuild) build);
         }
     }
 
-    void onLoad(@Nonnull Job<?,?> job, int buildNumber) {
+    void onLoad(@NonNull Job<?,?> job, int buildNumber) {
         Run<?,?> build = job.getBuildByNumber(buildNumber);
         if (build != null) {
             onLoad(build);
@@ -158,7 +160,7 @@ public abstract class Cause {
          */
         @Deprecated
         private transient Cause upstreamCause;
-        private @Nonnull List<Cause> upstreamCauses;
+        private @NonNull List<Cause> upstreamCauses;
 
         /**
          * @deprecated since 2009-02-28
@@ -173,14 +175,14 @@ public abstract class Cause {
             upstreamBuild = up.getNumber();
             upstreamProject = up.getParent().getFullName();
             upstreamUrl = up.getParent().getUrl();
-            upstreamCauses = new ArrayList<Cause>();
-            Set<String> traversed = new HashSet<String>();
+            upstreamCauses = new ArrayList<>();
+            Set<String> traversed = new HashSet<>();
             for (Cause c : up.getCauses()) {
                 upstreamCauses.add(trim(c, MAX_DEPTH, traversed));
             }
         }
 
-        private UpstreamCause(String upstreamProject, int upstreamBuild, String upstreamUrl, @Nonnull List<Cause> upstreamCauses) {
+        private UpstreamCause(String upstreamProject, int upstreamBuild, String upstreamUrl, @NonNull List<Cause> upstreamCauses) {
             this.upstreamProject = upstreamProject;
             this.upstreamBuild = upstreamBuild;
             this.upstreamUrl = upstreamUrl;
@@ -188,9 +190,9 @@ public abstract class Cause {
         }
 
         @Override
-        public void onLoad(@Nonnull Job<?,?> _job, int _buildNumber) {
-            Item i = Jenkins.getInstance().getItemByFullName(this.upstreamProject);
-            if (i == null || !(i instanceof Job)) {
+        public void onLoad(@NonNull Job<?,?> _job, int _buildNumber) {
+            Item i = Jenkins.get().getItemByFullName(this.upstreamProject);
+            if (!(i instanceof Job)) {
                 // cannot initialize upstream causes
                 return;
             }
@@ -227,12 +229,12 @@ public abstract class Cause {
             return Objects.hash(upstreamCauses, upstreamBuild, upstreamUrl, upstreamProject);
         }
 
-        private @Nonnull Cause trim(@Nonnull Cause c, int depth, Set<String> traversed) {
+        private @NonNull Cause trim(@NonNull Cause c, int depth, Set<String> traversed) {
             if (!(c instanceof UpstreamCause)) {
                 return c;
             }
             UpstreamCause uc = (UpstreamCause) c;
-            List<Cause> cs = new ArrayList<Cause>();
+            List<Cause> cs = new ArrayList<>();
             if (depth > 0) {
                 if (traversed.add(uc.upstreamUrl + uc.upstreamBuild)) {
                     for (Cause c2 : uc.upstreamCauses) {
@@ -273,7 +275,7 @@ public abstract class Cause {
          * @since 1.505
          */
         public @CheckForNull Run<?,?> getUpstreamRun() {
-            Job<?,?> job = Jenkins.getInstance().getItemByFullName(upstreamProject, Job.class);
+            Job<?,?> job = Jenkins.get().getItemByFullName(upstreamProject, Job.class);
             return job != null ? job.getBuildByNumber(upstreamBuild) : null;
         }
 
@@ -331,7 +333,6 @@ public abstract class Cause {
             public ConverterImpl(XStream2 xstream) { super(xstream); }
             @Override protected void callback(UpstreamCause uc, UnmarshallingContext context) {
                 if (uc.upstreamCause != null) {
-                    if (uc.upstreamCauses == null) uc.upstreamCauses = new ArrayList<Cause>();
                     uc.upstreamCauses.add(uc.upstreamCause);
                     uc.upstreamCause = null;
                     OldDataMonitor.report(context, "1.288");
@@ -346,7 +347,7 @@ public abstract class Cause {
             @Override public String toString() {
                 return "JENKINS-14814";
             }
-            @Override public void onLoad(@Nonnull Job<?,?> _job, int _buildNumber) {}
+            @Override public void onLoad(@NonNull Job<?,?> _job, int _buildNumber) {}
         }
 
     }
@@ -364,9 +365,15 @@ public abstract class Cause {
             this.authenticationName = Jenkins.getAuthentication().getName();
         }
 
+        /**
+         * Gets user display name when possible.
+         * @return User display name.
+         *         If the User does not exist, returns its ID.
+         */
         @Exported(visibility=3)
         public String getUserName() {
-        	return User.get(authenticationName).getDisplayName();
+        	final User user = User.getById(authenticationName, false);
+        	return user != null ? user.getDisplayName() : authenticationName;
         }
 
         @Override
@@ -393,21 +400,48 @@ public abstract class Cause {
      */
     public static class UserIdCause extends Cause {
 
+        @CheckForNull
         private String userId;
 
+        /**
+         * Constructor, which uses the current {@link User}.
+         */
         public UserIdCause() {
             User user = User.current();
             this.userId = (user == null) ? null : user.getId();
         }
 
+        /**
+         * Constructor.
+         * @param userId User ID. {@code null} if the user is unknown.
+         * @since 2.96
+         */
+        public UserIdCause(@CheckForNull String userId) {
+            this.userId = userId;
+        }
+
         @Exported(visibility = 3)
+        @CheckForNull
         public String getUserId() {
             return userId;
+        }
+        
+        @NonNull
+        private String getUserIdOrUnknown() {
+            return  userId != null ? userId : User.getUnknown().getId();
         }
 
         @Exported(visibility = 3)
         public String getUserName() {
-            return userId == null ? "anonymous" : User.get(userId).getDisplayName();
+            final User user = userId == null ? null : User.getById(userId, false);
+            return user == null ? "anonymous" : user.getDisplayName();
+        }
+
+        @Restricted(DoNotUse.class) // for Jelly
+        @CheckForNull
+        public String getUserUrl() {
+            final User user = userId == null ? null : User.getById(userId, false);
+            return user != null ? user.getUrl() : null;
         }
 
         @Override
@@ -417,9 +451,14 @@ public abstract class Cause {
 
         @Override
         public void print(TaskListener listener) {
-            listener.getLogger().println(Messages.Cause_UserIdCause_ShortDescription(
-                    // TODO better to use ModelHyperlinkNote.encodeTo(User), or User.getUrl, since it handles URL escaping
-                    ModelHyperlinkNote.encodeTo("/user/"+getUserId(), getUserName())));
+            User user = getUserId() == null ? null : User.getById(getUserId(), false);
+            if (user != null) {
+                listener.getLogger().println(Messages.Cause_UserIdCause_ShortDescription(
+                        ModelHyperlinkNote.encodeTo(user)));
+            } else {
+                listener.getLogger().println(Messages.Cause_UserIdCause_ShortDescription(
+                        "unknown or anonymous"));
+            }
         }
 
         @Override
@@ -446,12 +485,12 @@ public abstract class Cause {
         public String getShortDescription() {
             if(note != null) {
                 try {
-                    return Messages.Cause_RemoteCause_ShortDescriptionWithNote(addr, Jenkins.getInstance().getMarkupFormatter().translate(note));
+                    return Messages.Cause_RemoteCause_ShortDescriptionWithNote(Util.xmlEscape(addr), Jenkins.get().getMarkupFormatter().translate(note));
                 } catch (IOException x) {
                     // ignore
                 }
             }
-            return Messages.Cause_RemoteCause_ShortDescription(addr);
+            return Messages.Cause_RemoteCause_ShortDescription(Util.xmlEscape(addr));
         }
         
         @Exported(visibility = 3)

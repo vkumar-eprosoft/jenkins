@@ -22,10 +22,6 @@
  * THE SOFTWARE.
  */
 
-/**
- * @author pjanouse
- */
-
 package hudson.cli;
 
 import hudson.model.Computer;
@@ -46,6 +42,9 @@ import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.not;
 
+/**
+ * @author pjanouse
+ */
 public class DisconnectNodeCommandTest {
 
     private CLICommandInvoker command;
@@ -68,7 +67,7 @@ public class DisconnectNodeCommandTest {
         assertThat(result, failedWith(6));
         assertThat(result, hasNoStandardOutput());
         assertThat(result.stderr(), containsString("ERROR: user is missing the Agent/Disconnect permission"));
-        assertThat(result.stderr(), not(containsString("ERROR: Error occured while performing this command, see previous stderr output.")));
+        assertThat(result.stderr(), not(containsString("ERROR: " + CLICommand.CLI_LISTPARAM_SUMMARY_ERROR_TEXT)));
     }
 
     @Test
@@ -79,7 +78,7 @@ public class DisconnectNodeCommandTest {
         assertThat(result, failedWith(3));
         assertThat(result, hasNoStandardOutput());
         assertThat(result.stderr(), containsString("ERROR: No such agent \"never_created\" exists."));
-        assertThat(result.stderr(), not(containsString("ERROR: Error occured while performing this command, see previous stderr output.")));
+        assertThat(result.stderr(), not(containsString("ERROR: " + CLICommand.CLI_LISTPARAM_SUMMARY_ERROR_TEXT)));
     }
 
     @Test
@@ -233,7 +232,7 @@ public class DisconnectNodeCommandTest {
         assertThat(result, failedWith(5));
         assertThat(result, hasNoStandardOutput());
         assertThat(result.stderr(), containsString("never_created: No such agent \"never_created\" exists. Did you mean \"aNode1\"?"));
-        assertThat(result.stderr(), containsString("ERROR: Error occured while performing this command, see previous stderr output."));
+        assertThat(result.stderr(), containsString("ERROR: " + CLICommand.CLI_LISTPARAM_SUMMARY_ERROR_TEXT));
         assertThat(slave1.toComputer().isOffline(), equalTo(true));
         assertThat(slave1.toComputer().getOfflineCause(), instanceOf(OfflineCause.ByCLI.class));
         assertThat(((OfflineCause.ByCLI) slave1.toComputer().getOfflineCause()).message, equalTo("aCause"));
@@ -266,7 +265,7 @@ public class DisconnectNodeCommandTest {
     }
 
     public void disconnectNodeShouldSucceedOnMaster() throws Exception {
-        final Computer masterComputer = j.jenkins.getActiveInstance().getComputer("");
+        final Computer masterComputer = j.jenkins.getComputer("");
         assertThat(masterComputer.isOnline(), equalTo(true));
         assertThat(masterComputer.getOfflineCause(), equalTo(null));
 

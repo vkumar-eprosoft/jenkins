@@ -50,10 +50,10 @@ import java.util.TreeSet;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-import static com.google.common.collect.Lists.newArrayList;
+import com.google.common.collect.Lists;
 import static com.google.common.collect.Sets.newHashSet;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import jenkins.util.SystemProperties;
 
 /**
@@ -67,6 +67,16 @@ import jenkins.util.SystemProperties;
 @ExportedBean
 public class ParametersAction implements RunAction2, Iterable<ParameterValue>, QueueAction, EnvironmentContributingAction, LabelAssignmentAction {
 
+    /**
+     * Three state variable (null, false, true).
+     *
+     * If explicitly set to true, it will keep all variable, explicitly set to
+     * false it will drop all of them (except if they are marked safe).
+     * If null, and they are not safe, it will log a warning in logs to the user
+     * to let him choose the behavior
+     *
+     * @since 2.3
+     */
     @Restricted(NoExternalUse.class)
     public static final String KEEP_UNDEFINED_PARAMETERS_SYSTEM_PROPERTY_NAME = ParametersAction.class.getName() +
             ".keepUndefinedParameters";
@@ -77,7 +87,7 @@ public class ParametersAction implements RunAction2, Iterable<ParameterValue>, Q
 
     private Set<String> safeParameters;
 
-    private final List<ParameterValue> parameters;
+    private @NonNull List<ParameterValue> parameters;
 
     private List<String> parameterDefinitionNames;
 
@@ -89,8 +99,8 @@ public class ParametersAction implements RunAction2, Iterable<ParameterValue>, Q
 
     private transient Run<?, ?> run;
 
-    public ParametersAction(List<ParameterValue> parameters) {
-        this.parameters = parameters;
+    public ParametersAction(@NonNull List<ParameterValue> parameters) {
+        this.parameters = new ArrayList<>(parameters);
         String paramNames = SystemProperties.getString(SAFE_PARAMETERS_SYSTEM_PROPERTY_NAME);
         safeParameters = new TreeSet<>();
         if (paramNames != null) {
@@ -107,7 +117,7 @@ public class ParametersAction implements RunAction2, Iterable<ParameterValue>, Q
      *
      * @param parameters the parameters
      * @param additionalSafeParameters additional safe parameters
-     * @since TODO
+     * @since 1.651.2, 2.3
      */
     public ParametersAction(List<ParameterValue> parameters, Collection<String> additionalSafeParameters) {
         this(parameters);
@@ -128,10 +138,11 @@ public class ParametersAction implements RunAction2, Iterable<ParameterValue>, Q
         }
     }
 
-    public void buildEnvVars(AbstractBuild<?,?> build, EnvVars env) {
+    @Override
+    public void buildEnvironment(Run<?,?> run, EnvVars env) {
         for (ParameterValue p : getParameters()) {
             if (p == null) continue;
-            p.buildEnvironment(build, env); 
+            p.buildEnvironment(run, env);
         }
     }
 
@@ -211,11 +222,11 @@ public class ParametersAction implements RunAction2, Iterable<ParameterValue>, Q
             return !parameters.isEmpty();
         } else {
             // I don't think we need multiple ParametersActions, but let's be defensive
-            Set<ParameterValue> params = new HashSet<ParameterValue>();
+            Set<ParameterValue> params = new HashSet<>();
             for (ParametersAction other: others) {
                 params.addAll(other.parameters);
             }
-            return !params.equals(new HashSet<ParameterValue>(this.parameters));
+            return !params.equals(new HashSet<>(this.parameters));
         }
     }
 
@@ -224,14 +235,14 @@ public class ParametersAction implements RunAction2, Iterable<ParameterValue>, Q
      * with the overrides / new values given as parameters.
      * @return New {@link ParametersAction}. The result may contain null {@link ParameterValue}s
      */
-    @Nonnull
+    @NonNull
     public ParametersAction createUpdated(Collection<? extends ParameterValue> overrides) {
         if(overrides == null) {
             ParametersAction parametersAction = new ParametersAction(parameters);
             parametersAction.safeParameters = this.safeParameters;
             return parametersAction;
         }
-        List<ParameterValue> combinedParameters = newArrayList(overrides);
+        List<ParameterValue> combinedParameters = Lists.newArrayList(overrides);
         Set<String> names = newHashSet();
 
         for(ParameterValue v : overrides) {
@@ -254,11 +265,10 @@ public class ParametersAction implements RunAction2, Iterable<ParameterValue>, Q
      * with the overrides / new values given as another {@link ParametersAction}.
      * @return New {@link ParametersAction}. The result may contain null {@link ParameterValue}s
      */
-    @Nonnull
+    @NonNull
     public ParametersAction merge(@CheckForNull ParametersAction overrides) {
         if (overrides == null) {
-            ParametersAction parametersAction = new ParametersAction(parameters, this.safeParameters);
-            return parametersAction;
+            return new ParametersAction(parameters, this.safeParameters);
         }
         ParametersAction parametersAction = createUpdated(overrides.parameters);
         Set<String> safe = new TreeSet<>();
@@ -273,6 +283,9 @@ public class ParametersAction implements RunAction2, Iterable<ParameterValue>, Q
     }
 
     private Object readResolve() {
+        if (parameters == null) { // JENKINS-39495
+            parameters = Collections.emptyList();
+        }
         if (build != null)
             OldDataMonitor.report(build, "1.283");
         if (safeParameters == null) {
@@ -285,7 +298,7 @@ public class ParametersAction implements RunAction2, Iterable<ParameterValue>, Q
     public void onAttached(Run<?, ?> r) {
         ParametersDefinitionProperty p = r.getParent().getProperty(ParametersDefinitionProperty.class);
         if (p != null) {
-            this.parameterDefinitionNames = p.getParameterDefinitionNames();
+            this.parameterDefinitionNames = new ArrayList<>(p.getParameterDefinitionNames());
         } else {
             this.parameterDefinitionNames = Collections.emptyList();
         }
@@ -306,19 +319,20 @@ public class ParametersAction implements RunAction2, Iterable<ParameterValue>, Q
             return parameters;
         }
 
-        if (SystemProperties.getBoolean(KEEP_UNDEFINED_PARAMETERS_SYSTEM_PROPERTY_NAME)) {
+        Boolean shouldKeepFlag = SystemProperties.optBoolean(KEEP_UNDEFINED_PARAMETERS_SYSTEM_PROPERTY_NAME);
+        if (shouldKeepFlag != null && shouldKeepFlag) {
             return parameters;
         }
 
-        List<ParameterValue> filteredParameters = new ArrayList<ParameterValue>();
+        List<ParameterValue> filteredParameters = new ArrayList<>();
 
         for (ParameterValue v : this.parameters) {
             if (this.parameterDefinitionNames.contains(v.getName()) || isSafeParameter(v.getName())) {
                 filteredParameters.add(v);
-            } else {
-                LOGGER.log(Level.WARNING, "Skipped parameter `{0}` as it is undefined on `{1}`. Set `-D{2}`=true to allow "
+            } else if (shouldKeepFlag == null) {
+                LOGGER.log(Level.WARNING, "Skipped parameter `{0}` as it is undefined on `{1}`. Set `-D{2}=true` to allow "
                         + "undefined parameters to be injected as environment variables or `-D{3}=[comma-separated list]` to whitelist specific parameter names, "
-                        + "even though it represents a security breach",
+                        + "even though it represents a security breach or `-D{2}=false` to no longer show this message.",
                         new Object [] { v.getName(), run.getParent().getFullName(), KEEP_UNDEFINED_PARAMETERS_SYSTEM_PROPERTY_NAME, SAFE_PARAMETERS_SYSTEM_PROPERTY_NAME });
             }
         }
@@ -334,7 +348,7 @@ public class ParametersAction implements RunAction2, Iterable<ParameterValue>, Q
      * caller could inject any parameter (using any key) here. <strong>Treat it as untrusted data</strong>.
      *
      * @return all parameters defined here.
-     * @since TODO
+     * @since 1.651.2, 2.3
      */
     public List<ParameterValue> getAllParameters() {
         return Collections.unmodifiableList(parameters);

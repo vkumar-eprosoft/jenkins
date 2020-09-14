@@ -38,21 +38,21 @@ import java.util.concurrent.Callable;
 import org.kohsuke.accmod.Restricted;
 import org.kohsuke.accmod.restrictions.NoExternalUse;
 
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.io.File;
 import java.io.FileFilter;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -67,13 +67,13 @@ public class Nodes implements Saveable {
     /**
      * The {@link Jenkins} instance that we are tracking nodes for.
      */
-    @Nonnull
+    @NonNull
     private final Jenkins jenkins;
 
     /**
      * The map of nodes.
      */
-    private final ConcurrentMap<String, Node> nodes = new ConcurrentSkipListMap<String, Node>();
+    private final ConcurrentMap<String, Node> nodes = new ConcurrentSkipListMap<>();
 
     /**
      * Constructor, intended to be called only from {@link Jenkins}.
@@ -82,7 +82,7 @@ public class Nodes implements Saveable {
      *                let this reference escape from a partially constructed {@link Nodes} as when we are passed the
      *                reference the {@link Jenkins} instance has not completed instantiation.
      */
-    /*package*/ Nodes(@Nonnull Jenkins jenkins) {
+    /*package*/ Nodes(@NonNull Jenkins jenkins) {
         this.jenkins = jenkins;
     }
 
@@ -91,9 +91,9 @@ public class Nodes implements Saveable {
      *
      * @return the list of nodes.
      */
-    @Nonnull
+    @NonNull
     public List<Node> getNodes() {
-        return new ArrayList<Node>(nodes.values());
+        return new ArrayList<>(nodes.values());
     }
 
     /**
@@ -102,11 +102,11 @@ public class Nodes implements Saveable {
      * @param nodes the new list of nodes.
      * @throws IOException if the new list of nodes could not be persisted.
      */
-    public void setNodes(final @Nonnull Collection<? extends Node> nodes) throws IOException {
+    public void setNodes(final @NonNull Collection<? extends Node> nodes) throws IOException {
         Queue.withLock(new Runnable() {
             @Override
             public void run() {
-                Set<String> toRemove = new HashSet<String>(Nodes.this.nodes.keySet());
+                Set<String> toRemove = new HashSet<>(Nodes.this.nodes.keySet());
                 for (Node n : nodes) {
                     final String name = n.getNodeName();
                     toRemove.remove(name);
@@ -126,21 +126,41 @@ public class Nodes implements Saveable {
      * @param node the new node.
      * @throws IOException if the list of nodes could not be persisted.
      */
-    public void addNode(final @Nonnull Node node) throws IOException {
-        if (node != nodes.get(node.getNodeName())) {
+    public void addNode(final @NonNull Node node) throws IOException {
+        Node oldNode = nodes.get(node.getNodeName());
+        if (node != oldNode) {
             // TODO we should not need to lock the queue for adding nodes but until we have a way to update the
             // computer list for just the new node
+            AtomicReference<Node> old = new AtomicReference<>();
             Queue.withLock(new Runnable() {
                 @Override
                 public void run() {
-                    nodes.put(node.getNodeName(), node);
+                    old.set(nodes.put(node.getNodeName(), node));
                     jenkins.updateComputerList();
                     jenkins.trimLabels();
                 }
             });
             // TODO there is a theoretical race whereby the node instance is updated/removed after lock release
-            persistNode(node);
-            NodeListener.fireOnCreated(node);
+            try {
+                persistNode(node);
+            } catch (IOException | RuntimeException e) {
+                // JENKINS-50599: If persisting the node throws an exception, we need to remove the node from
+                // memory before propagating the exception.
+                Queue.withLock(new Runnable() {
+                    @Override
+                    public void run() {
+                        nodes.compute(node.getNodeName(), (ignoredNodeName, ignoredNode) -> oldNode);
+                        jenkins.updateComputerList();
+                        jenkins.trimLabels();
+                    }
+                });
+                throw e;
+            }
+            if (old.get() != null) {
+                NodeListener.fireOnUpdated(old.get(), node);
+            } else {
+                NodeListener.fireOnCreated(node);
+            }
         }
     }
 
@@ -150,7 +170,7 @@ public class Nodes implements Saveable {
      * @param node the node to be persisted.
      * @throws IOException if the node could not be persisted.
      */
-    private void persistNode(final @Nonnull Node node)  throws IOException {
+    private void persistNode(final @NonNull Node node)  throws IOException {
         // no need for a full save() so we just do the minimum
         if (node instanceof EphemeralNode) {
             Util.deleteRecursive(new File(getNodesDir(), node.getNodeName()));
@@ -172,7 +192,7 @@ public class Nodes implements Saveable {
      * @throws IOException if the node could not be persisted.
      * @since 1.634
      */
-    public boolean updateNode(final @Nonnull Node node) throws IOException {
+    public boolean updateNode(final @NonNull Node node) throws IOException {
         boolean exists;
         try {
             exists = Queue.withLock(new Callable<Boolean>() {
@@ -195,6 +215,7 @@ public class Nodes implements Saveable {
         if (exists) {
             // TODO there is a theoretical race whereby the node instance is updated/removed after lock release
             persistNode(node);
+            // TODO should this fireOnUpdated?
             return true;
         }
         return false;
@@ -204,9 +225,9 @@ public class Nodes implements Saveable {
      * Replace node of given name.
      *
      * @return {@code true} if node was replaced.
-     * @since TODO
+     * @since 2.8
      */
-    public boolean replaceNode(final Node oldOne, final @Nonnull Node newOne) throws IOException {
+    public boolean replaceNode(final Node oldOne, final @NonNull Node newOne) throws IOException {
         if (oldOne == nodes.get(oldOne.getNodeName())) {
             // use the queue lock until Nodes has a way of directly modifying a single node.
             Queue.withLock(new Runnable() {
@@ -218,7 +239,11 @@ public class Nodes implements Saveable {
                 }
             });
             updateNode(newOne);
+            if (!newOne.getNodeName().equals(oldOne.getNodeName())) {
+                Util.deleteRecursive(new File(getNodesDir(), oldOne.getNodeName()));
+            }
             NodeListener.fireOnUpdated(oldOne, newOne);
+
             return true;
         } else {
             return false;
@@ -232,7 +257,7 @@ public class Nodes implements Saveable {
      * @param node the node instance to remove.
      * @throws IOException if the list of nodes could not be persisted.
      */
-    public void removeNode(final @Nonnull Node node) throws IOException {
+    public void removeNode(final @NonNull Node node) throws IOException {
         if (node == nodes.get(node.getNodeName())) {
             Queue.withLock(new Runnable() {
                 @Override
@@ -255,16 +280,13 @@ public class Nodes implements Saveable {
         }
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
     public void save() throws IOException {
         if (BulkChange.contains(this)) {
             return;
         }
         final File nodesDir = getNodesDir();
-        final Set<String> existing = new HashSet<String>();
+        final Set<String> existing = new HashSet<>();
         for (Node n : nodes.values()) {
             if (n instanceof EphemeralNode) {
                 continue;
@@ -307,7 +329,7 @@ public class Nodes implements Saveable {
                 return child.isDirectory();
             }
         });
-        final Map<String, Node> newNodes = new TreeMap<String, Node>();
+        final Map<String, Node> newNodes = new TreeMap<>();
         if (subdirs != null) {
             for (File subdir : subdirs) {
                 try {
@@ -324,11 +346,7 @@ public class Nodes implements Saveable {
         Queue.withLock(new Runnable() {
             @Override
             public void run() {
-                for (Iterator<Map.Entry<String, Node>> i = nodes.entrySet().iterator(); i.hasNext(); ) {
-                    if (!(i.next().getValue() instanceof EphemeralNode)) {
-                        i.remove();
-                    }
-                }
+                nodes.entrySet().removeIf(stringNodeEntry -> !(stringNodeEntry.getValue() instanceof EphemeralNode));
                 nodes.putAll(newNodes);
                 jenkins.updateComputerList();
                 jenkins.trimLabels();

@@ -29,6 +29,7 @@ import hudson.ExtensionPoint;
 import hudson.model.Describable;
 import hudson.model.Descriptor;
 import hudson.model.Descriptor.FormException;
+import hudson.model.DescriptorVisibilityFilter;
 import jenkins.model.Jenkins;
 import hudson.model.Item;
 import hudson.model.ItemGroup;
@@ -41,18 +42,19 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import net.sf.json.JSONObject;
 
 /**
  * Extension point for adding a column to a table rendering of {@link Item}s, such as {@link ListView}.
  *
  * <p>
- * This object must have the <tt>column.jelly</tt>. This view
+ * This object must have the {@code column.jelly}. This view
  * is called for each cell of this column. The {@link Item} object
  * is passed in the "job" variable. The view should render
- * the &lt;td> tag.
+ * the {@code <td>} tag.
  *
  * <p>
- * This object may have an additional <tt>columHeader.jelly</tt>. The default ColmnHeader
+ * This object may have an additional {@code columnHeader.jelly}. The default ColumnHeader
  * will render {@link #getColumnCaption()}.
  *
  * <p>
@@ -85,7 +87,7 @@ public abstract class ListViewColumn implements ExtensionPoint, Describable<List
      * Returns all the registered {@link ListViewColumn} descriptors.
      */
     public static DescriptorExtensionList<ListViewColumn, Descriptor<ListViewColumn>> all() {
-        return Jenkins.getInstance().<ListViewColumn, Descriptor<ListViewColumn>>getDescriptorList(ListViewColumn.class);
+        return Jenkins.get().getDescriptorList(ListViewColumn.class);
     }
 
     /**
@@ -94,7 +96,7 @@ public abstract class ListViewColumn implements ExtensionPoint, Describable<List
      *      Use {@link #all()} for read access and {@link Extension} for registration.
      */
     @Deprecated
-    public static final DescriptorList<ListViewColumn> LIST = new DescriptorList<ListViewColumn>(ListViewColumn.class);
+    public static final DescriptorList<ListViewColumn> LIST = new DescriptorList<>(ListViewColumn.class);
 
     /**
      * Whether this column will be shown by default.
@@ -114,26 +116,56 @@ public abstract class ListViewColumn implements ExtensionPoint, Describable<List
      * and instead return a plain {@link Descriptor} instance.
      */
     public Descriptor<ListViewColumn> getDescriptor() {
-        return Jenkins.getInstance().getDescriptorOrDie(getClass());
+        return Jenkins.get().getDescriptorOrDie(getClass());
     }
 
     /**
      * Creates the list of {@link ListViewColumn}s to be used for newly created {@link ListView}s and their likes.
      * @since 1.391
+     * @deprecated use {@link #createDefaultInitialColumnList(Class)}
      */
+    @Deprecated
     public static List<ListViewColumn> createDefaultInitialColumnList() {
+        return createDefaultInitialColumnList(ListViewColumn.all());
+    }
+
+    /**
+     * Creates the list of {@link ListViewColumn}s to be used for newly created {@link ListView}s and their likes.
+     *
+     * @see ListView#initColumns()
+     * @since 2.37
+     */
+    public static List<ListViewColumn> createDefaultInitialColumnList(Class<? extends View> context) {
+        return createDefaultInitialColumnList(DescriptorVisibilityFilter.applyType(context, ListViewColumn.all()));
+    }
+
+    /**
+     * Creates the list of {@link ListViewColumn}s to be used for a {@link ListView}s and their likes.
+     *
+     * @see View#getColumns()
+     * @since 2.37
+     */
+    public static List<ListViewColumn> createDefaultInitialColumnList(View view) {
+        return createDefaultInitialColumnList(DescriptorVisibilityFilter.apply(view, ListViewColumn.all()));
+    }
+
+    private static List<ListViewColumn> createDefaultInitialColumnList(List<Descriptor<ListViewColumn>> descriptors) {
         // OK, set up default list of columns:
         // create all instances
-        ArrayList<ListViewColumn> r = new ArrayList<ListViewColumn>();
-
-        for (Descriptor<ListViewColumn> d : ListViewColumn.all())
+        ArrayList<ListViewColumn> r = new ArrayList<>();
+        final JSONObject emptyJSON = new JSONObject();
+        for (Descriptor<ListViewColumn> d : descriptors)
             try {
                 if (d instanceof ListViewColumnDescriptor) {
                     ListViewColumnDescriptor ld = (ListViewColumnDescriptor) d;
-                    if (!ld.shownByDefault())       continue;   // skip this
+                    if (!ld.shownByDefault()) {
+                        continue;   // skip this
+                    }
                 }
-                ListViewColumn lvc = d.newInstance(null, null);
-                if (!lvc.shownByDefault())      continue; // skip this
+                ListViewColumn lvc = d.newInstance(null, emptyJSON);
+                if (!lvc.shownByDefault()) {
+                    continue; // skip this
+                }
 
                 r.add(lvc);
             } catch (FormException e) {

@@ -12,7 +12,7 @@ import java.util.Set;
 import java.util.TreeSet;
 import static java.util.logging.Level.WARNING;
 import java.util.logging.Logger;
-import javax.annotation.Nonnull;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import javax.servlet.ServletContext;
 import jenkins.model.Jenkins;
 
@@ -27,12 +27,12 @@ import jenkins.model.Jenkins;
  * <li>/WEB-INF/<i>HOOK</i>.groovy in the war file
  * <li>/WEB-INF/<i>HOOK</i>.groovy.d/*.groovy in the war file
  * <li>$JENKINS_HOME/<i>HOOK</i>.groovy
- * <il>$JENKINS_HOME/<i>HOOK</i>.groovy.d/*.groovy
+ * <li>$JENKINS_HOME/<i>HOOK</i>.groovy.d/*.groovy
  * </ol>
  *
  * <p>
- * Scripts inside <tt>/WEB-INF</tt> is meant for OEM distributions of Jenkins. Files inside
- * <tt>$JENKINS_HOME</tt> are for installation local settings. Use of <tt>HOOK.groovy.d</tt>
+ * Scripts inside {@code /WEB-INF} is meant for OEM distributions of Jenkins. Files inside
+ * {@code $JENKINS_HOME} are for installation local settings. Use of {@code HOOK.groovy.d}
  * allows configuration management tools to control scripts easily.
  *
  * @author Kohsuke Kawaguchi
@@ -46,14 +46,14 @@ public class GroovyHookScript {
 
     @Deprecated
     public GroovyHookScript(String hook) {
-        this(hook, Jenkins.getActiveInstance());
+        this(hook, Jenkins.get());
     }
 
     private GroovyHookScript(String hook, Jenkins j) {
         this(hook, j.servletContext, j.getRootDir(), j.getPluginManager().uberClassLoader);
     }
 
-    public GroovyHookScript(String hook, @Nonnull ServletContext servletContext, @Nonnull File home, @Nonnull ClassLoader loader) {
+    public GroovyHookScript(String hook, @NonNull ServletContext servletContext, @NonNull File home, @NonNull ClassLoader loader) {
         this.hook = hook;
         this.servletContext = servletContext;
         this.home = home;
@@ -83,7 +83,7 @@ public class GroovyHookScript {
         Set<String> resources = servletContext.getResourcePaths("/WEB-INF/"+ hookGroovyD +"/");
         if (resources!=null) {
             // sort to execute them in a deterministic order
-            for (String res : new TreeSet<String>(resources)) {
+            for (String res : new TreeSet<>(resources)) {
                 try {
                     URL bundled = servletContext.getResource(res);
                     execute(bundled);

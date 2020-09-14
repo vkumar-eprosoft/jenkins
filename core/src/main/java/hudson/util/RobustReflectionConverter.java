@@ -44,7 +44,6 @@ import hudson.model.Saveable;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -54,9 +53,11 @@ import java.util.Set;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import static java.util.logging.Level.FINE;
+
+import java.util.logging.Level;
 import java.util.logging.Logger;
-import javax.annotation.Nonnull;
-import javax.annotation.concurrent.GuardedBy;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import net.jcip.annotations.GuardedBy;
 import jenkins.util.xstream.CriticalXStreamException;
 
 /**
@@ -76,8 +77,7 @@ public class RobustReflectionConverter implements Converter {
     protected final Mapper mapper;
     protected transient SerializationMethodInvoker serializationMethodInvoker;
     private transient ReflectionProvider pureJavaReflectionProvider;
-    private final @Nonnull XStream2.ClassOwnership classOwnership;
-    /** {@code pkg.Clazz#fieldName} */
+    private final @NonNull XStream2.ClassOwnership classOwnership;
     /** There are typically few critical fields around, but we end up looking up in this map a lot.
         in addition, this map is really only written to during static initialization, so we should use
         reader writer lock to avoid locking as much as possible.  In addition, to avoid looking up
@@ -85,7 +85,7 @@ public class RobustReflectionConverter implements Converter {
         with the fields as the keys.**/
     private final ReadWriteLock criticalFieldsLock = new ReentrantReadWriteLock();
     @GuardedBy("criticalFieldsLock")
-    private final Map<String, Set<String>> criticalFields = new HashMap<String, Set<String>>();
+    private final Map<String, Set<String>> criticalFields = new HashMap<>();
 
     public RobustReflectionConverter(Mapper mapper, ReflectionProvider reflectionProvider) {
         this(mapper, reflectionProvider, new XStream2().new PluginClassOwnership());
@@ -105,7 +105,7 @@ public class RobustReflectionConverter implements Converter {
             // If the class already exists, then add a new field, otherwise
             // create the hash map field
             if (!criticalFields.containsKey(field)) {
-                criticalFields.put(field, new HashSet<String>());
+                criticalFields.put(field, new HashSet<>());
             }
             criticalFields.get(field).add(clazz.getName());
         }
@@ -213,8 +213,7 @@ public class RobustReflectionConverter implements Converter {
                     if (mapping != null) {
                         if (mapping.getItemFieldName() != null) {
                             Collection list = (Collection) newObj;
-                            for (Iterator iter = list.iterator(); iter.hasNext();) {
-                                Object obj = iter.next();
+                            for (Object obj : list) {
                                 writeField(fieldName, mapping.getItemFieldName(), mapping.getItemType(), definedIn, obj);
                             }
                         } else {
@@ -368,7 +367,23 @@ public class RobustReflectionConverter implements Converter {
 
         // Report any class/field errors in Saveable objects
         if (context.get("ReadError") != null && context.get("Saveable") == result) {
-            OldDataMonitor.report((Saveable)result, (ArrayList<Throwable>)context.get("ReadError"));
+            // Avoid any error in OldDataMonitor to be catastrophic. See JENKINS-62231 and JENKINS-59582
+            // The root cause is the OldDataMonitor extension is not ready before a plugin triggers an error, for 
+            // example when trying to load a field that was created by a new version and you downgrade to the previous
+            // one.
+            try {
+                OldDataMonitor.report((Saveable) result, (ArrayList<Throwable>) context.get("ReadError"));
+            } catch (Throwable t) {
+                // it should be already reported, but we report with INFO just in case
+                StringBuilder message = new StringBuilder("There was a problem reporting unmarshalling field errors");
+                Level level = Level.WARNING;
+                if (t instanceof IllegalStateException && t.getMessage().contains("Expected 1 instance of " + OldDataMonitor.class.getName())) {
+                    message.append(". Make sure this code is executed after InitMilestone.EXTENSIONS_AUGMENTED stage, for example in Plugin#postInitialize instead of Plugin#start");
+                    level = Level.INFO; // it was reported when getting the singleton for OldDataMonitor
+                }
+                // it should be already reported, but we report with INFO just in case
+                LOGGER.log(level, message.toString(), t);
+            }
             context.put("ReadError", null);
         }
         return result;
@@ -378,7 +393,7 @@ public class RobustReflectionConverter implements Converter {
         LOGGER.log(FINE, "Failed to load", e);
         ArrayList<Throwable> list = (ArrayList<Throwable>)context.get("ReadError");
         if (list == null)
-            context.put("ReadError", list = new ArrayList<Throwable>());
+            context.put("ReadError", list = new ArrayList<>());
         list.add(e);
     }
 

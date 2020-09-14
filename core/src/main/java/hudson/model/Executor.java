@@ -24,15 +24,14 @@
 package hudson.model;
 
 import hudson.FilePath;
+import hudson.Functions;
 import hudson.Util;
 import hudson.model.Queue.Executable;
-import hudson.model.queue.Executables;
 import hudson.model.queue.SubTask;
-import hudson.model.queue.Tasks;
 import hudson.model.queue.WorkUnit;
 import hudson.security.ACL;
 import hudson.util.InterceptingProxy;
-import hudson.util.TimeUnit2;
+import java.util.concurrent.TimeUnit;
 import jenkins.model.CauseOfInterruption;
 import jenkins.model.CauseOfInterruption.UserInterruption;
 import jenkins.model.InterruptedBuildAction;
@@ -40,13 +39,14 @@ import jenkins.model.Jenkins;
 import org.acegisecurity.Authentication;
 import org.kohsuke.stapler.HttpResponse;
 import org.kohsuke.stapler.HttpResponses;
+import org.kohsuke.stapler.QueryParameter;
 import org.kohsuke.stapler.StaplerRequest;
 import org.kohsuke.stapler.StaplerResponse;
 import org.kohsuke.stapler.export.Exported;
 import org.kohsuke.stapler.export.ExportedBean;
 import org.kohsuke.stapler.interceptor.RequirePOST;
 
-import javax.annotation.concurrent.GuardedBy;
+import net.jcip.annotations.GuardedBy;
 import javax.servlet.ServletException;
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -63,12 +63,17 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import static hudson.model.queue.Executables.*;
+import hudson.security.ACLContext;
+import hudson.security.AccessControlled;
 import java.util.Collection;
 import static java.util.logging.Level.*;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import jenkins.model.queue.AsynchronousExecution;
+import jenkins.security.QueueItemAuthenticatorConfiguration;
+import jenkins.security.QueueItemAuthenticatorDescriptor;
 import org.kohsuke.accmod.Restricted;
+import org.kohsuke.accmod.restrictions.DoNotUse;
 import org.kohsuke.accmod.restrictions.NoExternalUse;
 
 
@@ -80,9 +85,10 @@ import org.kohsuke.accmod.restrictions.NoExternalUse;
  */
 @ExportedBean
 public class Executor extends Thread implements ModelObject {
-    protected final @Nonnull Computer owner;
+    protected final @NonNull Computer owner;
     private final Queue queue;
     private final ReadWriteLock lock = new ReentrantReadWriteLock();
+    private static final int DEFAULT_ESTIMATED_DURATION = -1;
 
     @GuardedBy("lock")
     private long startTime;
@@ -102,6 +108,11 @@ public class Executor extends Thread implements ModelObject {
     private Queue.Executable executable;
 
     /**
+     * Calculation of estimated duration needs some time, so, it's better to cache it once executable is known
+     */
+    private long executableEstimatedDuration = DEFAULT_ESTIMATED_DURATION;
+
+    /**
      * Used to mark that the execution is continuing asynchronously even though {@link Executor} as {@link Thread}
      * has finished.
      */
@@ -114,10 +125,6 @@ public class Executor extends Thread implements ModelObject {
      */
     @GuardedBy("lock")
     private WorkUnit workUnit;
-
-    private Throwable causeOfDeath;
-
-    private boolean induceDeath;
 
     @GuardedBy("lock")
     private boolean started;
@@ -133,12 +140,12 @@ public class Executor extends Thread implements ModelObject {
      * Cause of interruption. Access needs to be synchronized.
      */
     @GuardedBy("lock")
-    private final List<CauseOfInterruption> causes = new Vector<CauseOfInterruption>();
+    private final List<CauseOfInterruption> causes = new Vector<>();
 
-    public Executor(@Nonnull Computer owner, int n) {
+    public Executor(@NonNull Computer owner, int n) {
         super("Executor #"+n+" for "+owner.getDisplayName());
         this.owner = owner;
-        this.queue = Jenkins.getInstance().getQueue();
+        this.queue = Jenkins.get().getQueue();
         this.number = n;
     }
 
@@ -265,7 +272,7 @@ public class Executor extends Thread implements ModelObject {
         lock.writeLock().lock();
         try {
             if (causes.isEmpty())   return;
-            r = new ArrayList<CauseOfInterruption>(causes);
+            r = new ArrayList<>(causes);
             causes.clear();
         } finally {
             lock.writeLock().unlock();
@@ -286,19 +293,16 @@ public class Executor extends Thread implements ModelObject {
      */
     private void resetWorkUnit(String reason) {
         StringWriter writer = new StringWriter();
-        PrintWriter pw = new PrintWriter(writer);
-        try {
+        try (PrintWriter pw = new PrintWriter(writer)) {
             pw.printf("%s grabbed %s from queue but %s %s. ", getName(), workUnit, owner.getDisplayName(), reason);
             if (owner.getTerminatedBy().isEmpty()) {
                 pw.print("No termination trace available.");
             } else {
                 pw.println("Termination trace follows:");
-                for (Computer.TerminationRequest request: owner.getTerminatedBy()) {
-                    request.printStackTrace(pw);
+                for (Computer.TerminationRequest request : owner.getTerminatedBy()) {
+                    Functions.printStackTrace(request, pw);
                 }
             }
-        } finally {
-            pw.close();
         }
         LOGGER.log(WARNING, writer.toString());
         lock.writeLock().lock();
@@ -335,11 +339,7 @@ public class Executor extends Thread implements ModelObject {
             lock.writeLock().unlock();
         }
 
-        ACL.impersonate(ACL.SYSTEM);
-
-        try {
-            if (induceDeath)        throw new ThreadDeath();
-
+        try (ACLContext ctx = ACL.as(ACL.SYSTEM)) {
             SubTask task;
             // transition from idle to building.
             // perform this state change as an atomic operation wrt other queue operations
@@ -362,6 +362,10 @@ public class Executor extends Thread implements ModelObject {
                         LOGGER.log(FINE, getName()+" grabbed "+workUnit+" from queue");
                     SubTask task = workUnit.work;
                     Executable executable = task.createExecutable();
+                    if (executable == null) {
+                        String displayName = task instanceof Queue.Task ? ((Queue.Task) task).getFullDisplayName() : task.getDisplayName();
+                        LOGGER.log(WARNING, "{0} cannot be run (for example because it is disabled)", displayName);
+                    }
                     lock.writeLock().lock();
                     try {
                         Executor.this.executable = executable;
@@ -394,28 +398,44 @@ public class Executor extends Thread implements ModelObject {
                 // by tasks. In such case Jenkins starts the workUnit in order
                 // to report results to console outputs.
                 if (executable == null) {
-                    throw new Error("The null Executable has been created for "+workUnit+". The task cannot be executed");
+                    return;
                 }
 
+                executableEstimatedDuration = executable.getEstimatedDuration();
+
                 if (executable instanceof Actionable) {
+                    if (LOGGER.isLoggable(Level.FINER)) {
+                        LOGGER.log(FINER, "when running {0} from {1} we are copying {2} actions whereas the item currently has {3}", new Object[] {executable, workUnit.context.item, workUnit.context.actions, workUnit.context.item.getAllActions()});
+                    }
                     for (Action action: workUnit.context.actions) {
                         ((Actionable) executable).addAction(action);
                     }
                 }
 
-                ACL.impersonate(workUnit.context.item.authenticate());
                 setName(getName() + " : executing " + executable.toString());
-                if (LOGGER.isLoggable(FINE))
-                    LOGGER.log(FINE, getName()+" is now executing "+executable);
-                queue.execute(executable, task);
+                Authentication auth = workUnit.context.item.authenticate();
+                LOGGER.log(FINE, "{0} is now executing {1} as {2}", new Object[] {getName(), executable, auth});
+                if (LOGGER.isLoggable(FINE) && auth.equals(ACL.SYSTEM)) { // i.e., unspecified
+                    if (QueueItemAuthenticatorDescriptor.all().isEmpty()) {
+                        LOGGER.fine("no QueueItemAuthenticator implementations installed");
+                    } else if (QueueItemAuthenticatorConfiguration.get().getAuthenticators().isEmpty()) {
+                        LOGGER.fine("no QueueItemAuthenticator implementations configured");
+                    } else {
+                        LOGGER.log(FINE, "some QueueItemAuthenticator implementations configured but neglected to authenticate {0}", executable);
+                    }
+                }
+                try (ACLContext context = ACL.as(auth)) {
+                    queue.execute(executable, task);
+                }
             } catch (AsynchronousExecution x) {
                 lock.writeLock().lock();
                 try {
-                    x.setExecutor(this);
+                    x.setExecutorWithoutCompleting(this);
                     this.asynchronousExecution = x;
                 } finally {
                     lock.writeLock().unlock();
                 }
+                x.maybeComplete();
             } catch (Throwable e) {
                 problems = e;
             } finally {
@@ -434,8 +454,7 @@ public class Executor extends Thread implements ModelObject {
             LOGGER.log(FINE, getName()+" interrupted",e);
             // die peacefully
         } catch(Exception | Error e) {
-            causeOfDeath = e;
-            LOGGER.log(SEVERE, "Unexpected executor death", e);
+            LOGGER.log(SEVERE, getName()+": Unexpected executor death", e);
         } finally {
             if (asynchronousExecution == null) {
                 finish2();
@@ -466,12 +485,11 @@ public class Executor extends Thread implements ModelObject {
         for (RuntimeException e1 : owner.getTerminatedBy()) {
             LOGGER.log(Level.FINE, String.format("%s termination trace", getName()), e1);
         }
-        if (causeOfDeath == null) {// let this thread die and be replaced by a fresh unstarted instance
-            owner.removeExecutor(this);
-        }
+        owner.removeExecutor(this);
         if (this instanceof OneOffExecutor) {
             owner.remove((OneOffExecutor) this);
         }
+        executableEstimatedDuration = DEFAULT_ESTIMATED_DURATION;
         queue.scheduleMaintenance();
     }
 
@@ -486,19 +504,11 @@ public class Executor extends Thread implements ModelObject {
     }
 
     /**
-     * For testing only. Simulate a fatal unexpected failure.
-     */
-    public void killHard() {
-        induceDeath = true;
-    }
-
-    /**
      * Returns the current build this executor is running.
      *
      * @return
      *      null if the executor is idle.
      */
-    @Exported
     public @CheckForNull Queue.Executable getCurrentExecutable() {
         lock.readLock().lock();
         try {
@@ -507,6 +517,16 @@ public class Executor extends Thread implements ModelObject {
             lock.readLock().unlock();
         }
     }
+
+    /**
+     * Same as {@link #getCurrentExecutable} but checks {@link Item#READ}.
+     */
+    @Exported(name="currentExecutable")
+    @Restricted(DoNotUse.class) // for exporting only
+    public Queue.Executable getCurrentExecutableForApi() {
+        Executable candidate = getCurrentExecutable();
+        return candidate instanceof AccessControlled && ((AccessControlled) candidate).hasPermission(Item.READ) ? candidate : null;
+    }
     
     /**
      * Returns causes of interruption.
@@ -514,7 +534,7 @@ public class Executor extends Thread implements ModelObject {
      * @return Unmodifiable collection of causes of interruption.
      * @since  1.617    
      */
-    public @Nonnull Collection<CauseOfInterruption> getCausesOfInterruption() {
+    public @NonNull Collection<CauseOfInterruption> getCausesOfInterruption() {
         return Collections.unmodifiableCollection(causes);
     }
 
@@ -525,7 +545,7 @@ public class Executor extends Thread implements ModelObject {
      * @return
      *      null if the executor is idle.
      */
-    @Exported
+    @CheckForNull
     public WorkUnit getCurrentWorkUnit() {
         lock.readLock().lock();
         try {
@@ -557,7 +577,7 @@ public class Executor extends Thread implements ModelObject {
     }
 
     /**
-     * Same as {@link #getName()}.
+     * Human readable name of the Jenkins executor. For the Java thread name use {@link #getName()}.
      */
     public String getDisplayName() {
         return "Executor #"+getNumber();
@@ -606,7 +626,7 @@ public class Executor extends Thread implements ModelObject {
      * on-demand creation of executor threads. Callers should use
      * this method instead of {@link #isAlive()}, which would be incorrect for
      * non-started threads or running {@link AsynchronousExecution}.
-     * @return True if the executor is available for tasks
+     * @return true if the executor is available for tasks (usually true)
      * @since 1.536
      */
     public boolean isActive() {
@@ -660,13 +680,11 @@ public class Executor extends Thread implements ModelObject {
     }
 
     /**
-     * If this thread dies unexpectedly, obtain the cause of the failure.
-     *
-     * @return null if the death is expected death or the thread {@link #isActive}.
-     * @since 1.142
+     * @deprecated no longer used
      */
+    @Deprecated
     public @CheckForNull Throwable getCauseOfDeath() {
-        return causeOfDeath;
+        return null;
     }
 
     /**
@@ -677,18 +695,9 @@ public class Executor extends Thread implements ModelObject {
      */
     @Exported
     public int getProgress() {
-        long d;
-        lock.readLock().lock();
-        try {
-            if (executable == null) {
-                return -1;
-            }
-            d = Executables.getEstimatedDurationFor(executable);
-        } finally {
-            lock.readLock().unlock();
-        }
+        long d = executableEstimatedDuration;
         if (d <= 0) {
-            return -1;
+            return DEFAULT_ESTIMATED_DURATION;
         }
 
         int num = (int) (getElapsedTime() * 100 / d);
@@ -707,25 +716,23 @@ public class Executor extends Thread implements ModelObject {
      */
     @Exported
     public boolean isLikelyStuck() {
-        long d;
-        long elapsed;
         lock.readLock().lock();
         try {
             if (executable == null) {
                 return false;
             }
-
-            elapsed = getElapsedTime();
-            d = Executables.getEstimatedDurationFor(executable);
         } finally {
             lock.readLock().unlock();
         }
+
+        long elapsed = getElapsedTime();
+        long d = executableEstimatedDuration;
         if (d >= 0) {
             // if it's taking 10 times longer than ETA, consider it stuck
             return d * 10 < elapsed;
         } else {
             // if no ETA is available, a build taking longer than a day is considered stuck
-            return TimeUnit2.MILLISECONDS.toHours(elapsed) > 24;
+            return TimeUnit.MILLISECONDS.toHours(elapsed) > 24;
         }
     }
 
@@ -759,7 +766,7 @@ public class Executor extends Thread implements ModelObject {
      *      string like "3 minutes" "1 day" etc.
      */
     public String getTimestampString() {
-        return Util.getPastTimeString(getElapsedTime());
+        return Util.getTimeSpanString(getElapsedTime());
     }
 
     /**
@@ -767,17 +774,7 @@ public class Executor extends Thread implements ModelObject {
      * until the build completes.
      */
     public String getEstimatedRemainingTime() {
-        long d;
-        lock.readLock().lock();
-        try {
-            if (executable == null) {
-                return Messages.Executor_NotAvailable();
-            }
-
-            d = Executables.getEstimatedDurationFor(executable);
-        } finally {
-            lock.readLock().unlock();
-        }
+        long d = executableEstimatedDuration;
         if (d < 0) {
             return Messages.Executor_NotAvailable();
         }
@@ -795,24 +792,14 @@ public class Executor extends Thread implements ModelObject {
      * it as a number of milli-seconds.
      */
     public long getEstimatedRemainingTimeMillis() {
-        long d;
-        lock.readLock().lock();
-        try {
-            if (executable == null) {
-                return -1;
-            }
-
-            d = Executables.getEstimatedDurationFor(executable);
-        } finally {
-            lock.readLock().unlock();
-        }
+        long d = executableEstimatedDuration;
         if (d < 0) {
-            return -1;
+            return DEFAULT_ESTIMATED_DURATION;
         }
 
         long eta = d - getElapsedTime();
         if (eta <= 0) {
-            return -1;
+            return DEFAULT_ESTIMATED_DURATION;
         }
 
         return eta;
@@ -842,7 +829,7 @@ public class Executor extends Thread implements ModelObject {
 
     /**
      * @deprecated as of 1.489
-     *      Use {@link #doStop()}.
+     *      Use {@link #doStop()} or {@link #doStopBuild(String)}.
      */
     @RequirePOST
     @Deprecated
@@ -851,17 +838,38 @@ public class Executor extends Thread implements ModelObject {
     }
 
     /**
-     * Stops the current build.
+     * Stops the current build.<br>
+     * You can use {@link #doStopBuild(String)} instead to ensure what will be
+     * interrupted is actually what you want to interrupt.
      *
      * @since 1.489
+     * @see #doStopBuild(String)
      */
     @RequirePOST
     public HttpResponse doStop() {
+        return doStopBuild(null);
+    }
+
+    /**
+     * Stops the current build, if matching the specified external id
+     * (or no id is specified, or the current {@link Executable} is not a {@link Run}).
+     *
+     * @param runExtId
+     *      if not null, the externalizable id ({@link Run#getExternalizableId()})
+     *      of the build the user expects to interrupt
+     * @since 2.209
+     */
+    @RequirePOST
+    @Restricted(NoExternalUse.class)
+    public HttpResponse doStopBuild(@CheckForNull @QueryParameter(fixEmpty = true) String runExtId) {
         lock.writeLock().lock(); // need write lock as interrupt will change the field
         try {
             if (executable != null) {
-                Tasks.getOwnerTaskOf(getParentOf(executable)).checkAbortPermission();
-                interrupt();
+                if (runExtId == null || runExtId.isEmpty() || ! (executable instanceof Run)
+                        || (executable instanceof Run && runExtId.equals(((Run<?,?>) executable).getExternalizableId()))) {
+                    getParentOf(executable).getOwnerTask().checkAbortPermission();
+                    interrupt();
+                }
             }
         } finally {
             lock.writeLock().unlock();
@@ -870,14 +878,10 @@ public class Executor extends Thread implements ModelObject {
     }
 
     /**
-     * Throws away this executor and get a new one.
+     * @deprecated now a no-op
      */
-    @RequirePOST
+    @Deprecated
     public HttpResponse doYank() {
-        Jenkins.getInstance().checkPermission(Jenkins.ADMINISTER);
-        if (isActive())
-            throw new Failure("Can't yank a live executor");
-        owner.removeExecutor(this);
         return HttpResponses.redirectViaContextPath("/");
     }
 
@@ -887,13 +891,13 @@ public class Executor extends Thread implements ModelObject {
     public boolean hasStopPermission() {
         lock.readLock().lock();
         try {
-            return executable != null && Tasks.getOwnerTaskOf(getParentOf(executable)).hasAbortPermission();
+            return executable != null && getParentOf(executable).getOwnerTask().hasAbortPermission();
         } finally {
             lock.readLock().unlock();
         }
     }
 
-    public @Nonnull Computer getOwner() {
+    public @NonNull Computer getOwner() {
         return owner;
     }
 
@@ -901,16 +905,10 @@ public class Executor extends Thread implements ModelObject {
      * Returns when this executor started or should start being idle.
      */
     public long getIdleStartMilliseconds() {
-        lock.readLock().lock();
-        try {
-            if (isIdle())
-                return Math.max(creationTime, owner.getConnectTime());
-            else {
-                return Math.max(startTime + Math.max(0, Executables.getEstimatedDurationFor(executable)),
-                        System.currentTimeMillis() + 15000);
-            }
-        } finally {
-            lock.readLock().unlock();
+        if (isIdle())
+            return Math.max(creationTime, owner.getConnectTime());
+        else {
+            return Math.max(startTime + Math.max(0, executableEstimatedDuration), System.currentTimeMillis() + 15000);
         }
     }
 
@@ -962,12 +960,7 @@ public class Executor extends Thread implements ModelObject {
             return null;
         }
         for (Computer computer : jenkins.getComputers()) {
-            for (Executor executor : computer.getExecutors()) {
-                if (executor.getCurrentExecutable() == executable) {
-                    return executor;
-                }
-            }
-            for (Executor executor : computer.getOneOffExecutors()) {
+            for (Executor executor : computer.getAllExecutors()) {
                 if (executor.getCurrentExecutable() == executable) {
                     return executor;
                 }
@@ -977,23 +970,18 @@ public class Executor extends Thread implements ModelObject {
     }
 
     /**
-     * Returns the estimated duration for the executable.
-     * Protects against {@link AbstractMethodError}s if the {@link Executable} implementation
-     * was compiled against Hudson < 1.383
-     *
-     * @deprecated as of 1.388
-     *      Use {@link Executables#getEstimatedDurationFor(Queue.Executable)}
+     * @deprecated call {@link Executable#getEstimatedDuration} directly
      */
     @Deprecated
     public static long getEstimatedDurationFor(Executable e) {
-        return Executables.getEstimatedDurationFor(e);
+        return e == null ? DEFAULT_ESTIMATED_DURATION : e.getEstimatedDuration();
     }
 
     /**
      * Mechanism to allow threads (in particular the channel request handling threads) to
      * run on behalf of {@link Executor}.
      */
-    private static final ThreadLocal<Executor> IMPERSONATION = new ThreadLocal<Executor>();
+    private static final ThreadLocal<Executor> IMPERSONATION = new ThreadLocal<>();
 
     private static final Logger LOGGER = Logger.getLogger(Executor.class.getName());
 }

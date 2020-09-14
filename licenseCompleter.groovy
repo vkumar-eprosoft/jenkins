@@ -1,5 +1,5 @@
 /*
-    This script auguments the missing license information in our dependencies.
+    This script augments the missing license information in our dependencies.
 */
 complete {
     // license constants
@@ -8,7 +8,8 @@ complete {
     def lgpl = license("LGPL 2.1","http://www.gnu.org/licenses/old-licenses/lgpl-2.1.html")
     def mitLicense = license("MIT License","http://www.opensource.org/licenses/mit-license.php")
     def bsdLicense = license("BSD License","http://opensource.org/licenses/BSD-2-Clause")
-    def jenkinsLicense = license("MIT License","http://jenkins-ci.org/mit-license")
+    def jenkinsLicense = license("MIT License","https://jenkins.io/mit-license")
+    def ccby = license("Creative Commons Attribution License","http://creativecommons.org/licenses/by/2.5")
 
 
     match("asm:*") {
@@ -47,7 +48,7 @@ complete {
         rewriteLicense([], license("BSD License","http://jaxen.codehaus.org/license.html"))
     }
 
-    match("*:dom4j") {
+    match("org.jenkins-ci.dom4j:dom4j") {
         rewriteLicense([],license("BSD License","http://dom4j.sourceforge.net/dom4j-1.6.1/license.html"))
     }
 
@@ -59,7 +60,7 @@ complete {
 
     match("relaxngDatatype:relaxngDatatype") {
         // see http://sourceforge.net/projects/relaxng/
-        rewriteLicense([],bsdLicense);
+        rewriteLicense([],bsdLicense)
     }
 
     match(["org.kohsuke.jinterop:j-interop","org.kohsuke.jinterop:j-interopdeps"]) {
@@ -82,9 +83,12 @@ complete {
 
     match("*:sezpoz") {
         // GPL-phobia people react to "GPL" strongly, so accept sezpoz under CDDL
-        rewriteLicense([license("CDDL or GPL 2 with Classpath Exception",null)],cddl);
+        rewriteLicense([license("CDDL or GPL 2 with Classpath Exception",null)],cddl)
     }
            
+    match("net.jcip:jcip-annotations") {
+        rewriteLicense([],ccby)
+    }
 
     //
     // Choose from multi-licensed modules

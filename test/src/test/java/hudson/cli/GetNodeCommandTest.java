@@ -60,7 +60,7 @@ public class GetNodeCommandTest {
                 .invokeWithArgs("MySlave")
         ;
 
-        assertThat(result.stderr(), containsString("ERROR: user is missing the Agent/ExtendedRead permission"));
+        assertThat(result.stderr(), containsString("ERROR: user is missing the Agent/Configure permission"));
         assertThat(result, failedWith(6));
         assertThat(result, hasNoStandardOutput());
     }
@@ -74,7 +74,7 @@ public class GetNodeCommandTest {
                 .invokeWithArgs("MySlave")
         ;
 
-        assertThat(result.stdout(), startsWith("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
+        assertThat(result.stdout(), startsWith("<?xml version=\"1.1\" encoding=\"UTF-8\"?>"));
         assertThat(result.stdout(), containsString("<name>MySlave</name>"));
         assertThat(result, hasNoErrorOutput());
         assertThat(result, succeeded());

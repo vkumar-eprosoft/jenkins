@@ -29,6 +29,7 @@ import hudson.DependencyRunner.ProjectRunnable;
 import hudson.DescriptorExtensionList;
 import hudson.Extension;
 import hudson.ExtensionPoint;
+import hudson.Util;
 import hudson.model.AbstractProject;
 import hudson.model.Action;
 import hudson.model.Build;
@@ -40,7 +41,6 @@ import hudson.model.PeriodicWork;
 import hudson.model.Project;
 import hudson.model.TopLevelItem;
 import hudson.model.TopLevelItemDescriptor;
-import hudson.scheduler.CronTab;
 import hudson.scheduler.CronTabList;
 
 import java.io.InvalidObjectException;
@@ -52,15 +52,15 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.GregorianCalendar;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.Future;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import antlr.ANTLRException;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import edu.umd.cs.findbugs.annotations.NonNull;
 
-import edu.umd.cs.findbugs.annotations.SuppressWarnings;
 import hudson.model.Items;
 import jenkins.model.ParameterizedJobMixIn;
 import org.jenkinsci.Symbol;
@@ -90,11 +90,15 @@ public abstract class Trigger<J extends Item> implements Describable<Trigger<?>>
         this.job = project;
 
         try {// reparse the tabs with the job as the hash
-            this.tabs = CronTabList.create(spec, Hash.from(project.getFullName()));
+            if (spec != null) {
+                this.tabs = CronTabList.create(spec, Hash.from(project.getFullName()));
+            } else {
+                LOGGER.log(Level.WARNING, "The job {0} has a null crontab spec which is incorrect", job.getFullName());
+            }
         } catch (ANTLRException e) {
             // this shouldn't fail because we've already parsed stuff in the constructor,
             // so if it fails, use whatever 'tabs' that we already have.
-            LOGGER.log(Level.FINE, "Failed to parse crontab spec: "+spec,e);
+            LOGGER.log(Level.WARNING, String.format("Failed to parse crontab spec %s in job %s", spec, project.getFullName()), e);
         }
     }
 
@@ -146,7 +150,7 @@ public abstract class Trigger<J extends Item> implements Describable<Trigger<?>>
     }
 
     public TriggerDescriptor getDescriptor() {
-        return (TriggerDescriptor) Jenkins.getInstance().getDescriptorOrDie(getClass());
+        return (TriggerDescriptor) Jenkins.get().getDescriptorOrDie(getClass());
     }
 
 
@@ -161,7 +165,7 @@ public abstract class Trigger<J extends Item> implements Describable<Trigger<?>>
      * periodically. This is useful when your trigger does
      * some polling work.
      */
-    protected Trigger(@Nonnull String cronTabSpec) throws ANTLRException {
+    protected Trigger(@NonNull String cronTabSpec) throws ANTLRException {
         this.spec = cronTabSpec;
         this.tabs = CronTabList.create(cronTabSpec);
     }
@@ -171,7 +175,7 @@ public abstract class Trigger<J extends Item> implements Describable<Trigger<?>>
      */
     protected Trigger() {
         this.spec = "";
-        this.tabs = new CronTabList(Collections.<CronTab>emptyList());
+        this.tabs = new CronTabList(Collections.emptyList());
     }
 
     /**
@@ -212,7 +216,7 @@ public abstract class Trigger<J extends Item> implements Describable<Trigger<?>>
         }
 
         public long getInitialDelay() {
-            return MIN - (Calendar.getInstance().get(Calendar.SECOND) * 1000);
+            return MIN - TimeUnit.SECONDS.toMillis(Calendar.getInstance().get(Calendar.SECOND));
         }
 
         public void doRun() {
@@ -233,7 +237,7 @@ public abstract class Trigger<J extends Item> implements Describable<Trigger<?>>
     private static Future previousSynchronousPolling;
 
     public static void checkTriggers(final Calendar cal) {
-        Jenkins inst = Jenkins.getInstance();
+        Jenkins inst = Jenkins.get();
 
         // Are we using synchronous polling?
         SCMTrigger.DescriptorImpl scmd = inst.getDescriptorByType(SCMTrigger.DescriptorImpl.class);
@@ -262,27 +266,42 @@ public abstract class Trigger<J extends Item> implements Describable<Trigger<?>>
         }
 
         // Process all triggers, except SCMTriggers when synchronousPolling is set
-        for (ParameterizedJobMixIn.ParameterizedJob p : inst.getAllItems(ParameterizedJobMixIn.ParameterizedJob.class)) {
+        for (ParameterizedJobMixIn.ParameterizedJob<?, ?> p : inst.allItems(ParameterizedJobMixIn.ParameterizedJob.class)) {
             for (Trigger t : p.getTriggers().values()) {
-                if (! (t instanceof SCMTrigger && scmd.synchronousPolling)) {
-                    LOGGER.log(Level.FINE, "cron checking {0} with spec ‘{1}’", new Object[] {p, t.spec.trim()});
+                if (!(t instanceof SCMTrigger && scmd.synchronousPolling)) {
+                    if (t !=null && t.spec != null && t.tabs != null) {
+                        LOGGER.log(Level.FINE, "cron checking {0} with spec ‘{1}’", new Object[]{p, t.spec.trim()});
 
-                    if (t.tabs.check(cal)) {
-                        LOGGER.log(Level.CONFIG, "cron triggered {0}", p);
-                        try {
-                            t.run();
-                        } catch (Throwable e) {
-                            // t.run() is a plugin, and some of them throw RuntimeException and other things.
-                            // don't let that cancel the polling activity. report and move on.
-                            LOGGER.log(Level.WARNING, t.getClass().getName() + ".run() failed for " + p, e);
+                        if (t.tabs.check(cal)) {
+                            LOGGER.log(Level.CONFIG, "cron triggered {0}", p);
+                            try {
+                                long begin_time = System.currentTimeMillis();
+                                t.run();
+                                long end_time = System.currentTimeMillis();
+                                if ((end_time - begin_time) > CRON_THRESHOLD) {
+                                    final String msg = String.format("Trigger %s.run() triggered by %s spent too much time "
+                                                    + "(%s) in its execution, other timers can be affected",
+                                            t.getClass().getName(), p, Util.getTimeSpanString(end_time - begin_time));
+                                    LOGGER.log(Level.WARNING, msg);
+                                    SlowTriggerAdminMonitor.getInstance().report(t.getClass().getName(), msg);
+                                }
+                            } catch (Throwable e) {
+                                // t.run() is a plugin, and some of them throw RuntimeException and other things.
+                                // don't let that cancel the polling activity. report and move on.
+                                LOGGER.log(Level.WARNING, t.getClass().getName() + ".run() failed for " + p, e);
+                            }
+                        } else {
+                            LOGGER.log(Level.FINER, "did not trigger {0}", p);
                         }
                     } else {
-                        LOGGER.log(Level.FINER, "did not trigger {0}", p);
+                        LOGGER.log(Level.WARNING, "The job {0} has a syntactically incorrect config and is missing the cron spec for a trigger", p.getFullName());
                     }
                 }
             }
         }
     }
+
+    public static long CRON_THRESHOLD = 1000*30;    // Default threshold 30s
 
     private static final Logger LOGGER = Logger.getLogger(Trigger.class.getName());
 
@@ -304,11 +323,11 @@ public abstract class Trigger<J extends Item> implements Describable<Trigger<?>>
      * Returns all the registered {@link Trigger} descriptors.
      */
     public static DescriptorExtensionList<Trigger<?>,TriggerDescriptor> all() {
-        return (DescriptorExtensionList) Jenkins.getInstance().getDescriptorList(Trigger.class);
+        return (DescriptorExtensionList) Jenkins.get().getDescriptorList(Trigger.class);
     }
 
     /**
-     * Returns a subset of {@link TriggerDescriptor}s that applys to the given item.
+     * Returns a subset of {@link TriggerDescriptor}s that applies to the given item.
      */
     public static List<TriggerDescriptor> for_(Item i) {
         List<TriggerDescriptor> r = new ArrayList<>();

@@ -30,7 +30,9 @@ import hudson.model.Hudson;
 import hudson.model.UpdateCenter;
 import hudson.model.UpdateCenter.UpdateCenterJob;
 import hudson.model.UpdateSite;
-import hudson.scm.SubversionSCM;
+import hudson.model.User;
+import hudson.security.ACL;
+import hudson.security.ACLContext;
 import hudson.util.FormValidation;
 import hudson.util.PersistedList;
 import java.io.File;
@@ -40,18 +42,33 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.Future;
+
+import jenkins.ClassLoaderReflectionToolkit;
 import jenkins.RestartRequiredException;
+import jenkins.model.GlobalConfiguration;
+
+import jenkins.model.Jenkins;
 import net.sf.json.JSONArray;
 import net.sf.json.JSONObject;
 import org.apache.commons.io.FileUtils;
 import org.apache.tools.ant.filters.StringInputStream;
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+import static org.junit.Assume.assumeFalse;
+
+import org.junit.Assert;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 import org.jvnet.hudson.test.Issue;
 import org.jvnet.hudson.test.JenkinsRule;
+import org.jvnet.hudson.test.MockAuthorizationStrategy;
 import org.jvnet.hudson.test.Url;
 import org.jvnet.hudson.test.recipes.WithPlugin;
 import org.jvnet.hudson.test.recipes.WithPluginManager;
@@ -99,7 +116,7 @@ public class PluginManagerTest {
      * Tests the effect of {@link WithPlugin}.
      */
     @WithPlugin("tasks.jpi")
-    @Test public void withRecipeJpi() throws Exception {
+    @Test public void withRecipeJpi() {
         assertNotNull(r.jenkins.getPlugin("tasks"));
     }
     
@@ -107,7 +124,7 @@ public class PluginManagerTest {
      * Tests the effect of {@link WithPlugin}.
      */
     @WithPlugin("legacy.hpi")
-    @Test public void withRecipeHpi() throws Exception {
+    @Test public void withRecipeHpi() {
         assertNotNull(r.jenkins.getPlugin("legacy"));
     }
 
@@ -159,9 +176,8 @@ public class PluginManagerTest {
                     tested = true;
 
                     // plugins should be already visible in the UberClassLoader
-                    assertTrue(!activePlugins.isEmpty());
+                    assertFalse(activePlugins.isEmpty());
 
-                    uberClassLoader.loadClass(SubversionSCM.class.getName());
                     uberClassLoader.loadClass("hudson.plugins.tasks.Messages");
 
                     super.startPlugin(plugin);
@@ -208,6 +224,7 @@ public class PluginManagerTest {
     }
 
     @Test public void prevalidateConfig() throws Exception {
+        assumeFalse("TODO: Implement this test on Windows", Functions.isWindows());
         PersistedList<UpdateSite> sites = r.jenkins.getUpdateCenter().getSites();
         sites.clear();
         URL url = PluginManagerTest.class.getResource("/plugins/tasks-update-center.json");
@@ -244,7 +261,7 @@ public class PluginManagerTest {
     // org.jenkinsci.plugins.dependencytest.depender:
     //   public class Depender {
     //     public static String getValue() {
-    //       if (Jenkins.getInstance().getPlugin("dependee") != null) {
+    //       if (Jenkins.get().getPlugin("dependee") != null) {
     //         return Dependee.getValue();
     //       }
     //       return "depender";
@@ -284,7 +301,7 @@ public class PluginManagerTest {
         try {
             callDependerValue();
             fail();
-        } catch (ClassNotFoundException _) {
+        } catch (ClassNotFoundException ex) {
         }
         
         // No extensions exist.
@@ -322,8 +339,13 @@ public class PluginManagerTest {
         try {
             r.jenkins.getExtensionList("org.jenkinsci.plugins.dependencytest.dependee.DependeeExtensionPoint");
             fail();
-        } catch( ClassNotFoundException _ ){
+        } catch( ClassNotFoundException ex ){
         }
+        // Extension extending a dependee class can't be loaded either
+        try {
+            r.jenkins.getExtensionList("org.jenkinsci.plugins.dependencytest.depender.DependerExtension");
+            fail();
+        } catch( NoClassDefFoundError ex ){}
         
         // Load dependee.
         {
@@ -333,10 +355,102 @@ public class PluginManagerTest {
         // (MUST) Not throws an exception
         // (SHOULD) depender successfully accesses to dependee.
         assertEquals("dependee", callDependerValue());
-        
-        // No extensions exist.
-        // extensions in depender is not loaded.
-        assertTrue(r.jenkins.getExtensionList("org.jenkinsci.plugins.dependencytest.dependee.DependeeExtensionPoint").isEmpty());
+
+        // Extensions in depender are loaded.
+        assertEquals(1, r.jenkins.getExtensionList("org.jenkinsci.plugins.dependencytest.depender.DependerExtension").size());
+    }
+
+    /**
+     * Load "optional-depender" and then load "dependee".
+     * Asserts that "depender" can access to "dependee".
+     *
+     * @throws Exception
+     */
+    @Issue("JENKINS-60449")
+    @WithPlugin("variant.hpi")
+    @Test public void installDependedOptionalPluginWithoutRestart() throws Exception {
+        // Load optional-depender.
+        {
+            dynamicLoad("optional-depender-0.0.2.hpi");
+        }
+        // Extension depending on dependee class isn't loaded
+        assertTrue(r.jenkins.getExtensionList("org.jenkinsci.plugins.dependencytest.optionaldepender.OptionalDependerExtension").isEmpty());
+        // Load dependee.
+        {
+            dynamicLoad("dependee-0.0.2.hpi");
+        }
+
+        // Extensions in depender are loaded.
+        assertEquals(1, r.jenkins.getExtensionList("org.jenkinsci.plugins.dependencytest.optionaldepender.OptionalDependerExtension").size());
+    }
+
+    @Issue("JENKINS-21486")
+    @Test public void installPluginWithObsoleteDependencyFails() throws Exception {
+        // Load dependee 0.0.1.
+        {
+            dynamicLoad("dependee.hpi");
+        }
+
+        // Load mandatory-depender 0.0.2, depending on dependee 0.0.2
+        try {
+            dynamicLoad("mandatory-depender-0.0.2.hpi");
+            fail("Should not have worked");
+        } catch (IOException e) {
+            // Expected
+        }
+    }
+
+    @Issue("JENKINS-21486")
+    @Test public void installPluginWithDisabledOptionalDependencySucceeds() throws Exception {
+        // Load dependee 0.0.2.
+        {
+            dynamicLoadAndDisable("dependee-0.0.2.hpi");
+        }
+
+        // Load depender 0.0.2, depending optionally on dependee 0.0.2
+        {
+            dynamicLoad("depender-0.0.2.hpi");
+        }
+
+        // dependee is not loaded so we cannot list any extension for it.
+        try {
+            r.jenkins.getExtensionList("org.jenkinsci.plugins.dependencytest.dependee.DependeeExtensionPoint");
+            fail();
+        } catch( ClassNotFoundException ex ){
+        }
+    }
+
+    @Issue("JENKINS-21486")
+    @Test public void installPluginWithDisabledDependencyFails() throws Exception {
+        // Load dependee 0.0.2.
+        {
+            dynamicLoadAndDisable("dependee-0.0.2.hpi");
+        }
+
+        // Load mandatory-depender 0.0.2, depending on dependee 0.0.2
+        try {
+            dynamicLoad("mandatory-depender-0.0.2.hpi");
+            fail("Should not have worked");
+        } catch (IOException e) {
+            // Expected
+        }
+    }
+
+
+    @Issue("JENKINS-21486")
+    @Test public void installPluginWithObsoleteOptionalDependencyFails() throws Exception {
+        // Load dependee 0.0.1.
+        {
+            dynamicLoad("dependee.hpi");
+        }
+
+        // Load depender 0.0.2, depending optionally on dependee 0.0.2
+        try {
+            dynamicLoad("depender-0.0.2.hpi");
+            fail("Should not have worked");
+        } catch (IOException e) {
+            // Expected
+        }
     }
 
     @Issue("JENKINS-12753")
@@ -369,16 +483,56 @@ public class PluginManagerTest {
         // Check that there was some data in the response and that the first entry
         // at least had some of the expected fields.
         JSONObject pluginInfo = data.getJSONObject(0);
-        assertTrue(pluginInfo.getString("name") != null);
-        assertTrue(pluginInfo.getString("title") != null);
-        assertTrue(pluginInfo.getString("dependencies") != null);
+        assertNotNull(pluginInfo.getString("name"));
+        assertNotNull(pluginInfo.getString("title"));
+        assertNotNull(pluginInfo.getString("dependencies"));
+    }
+
+    @Issue("JENKINS-41684")
+    @Test
+    public void requireSystemDuringLoad() throws Exception {
+        r.jenkins.setSecurityRealm(r.createDummySecurityRealm());
+        r.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy());
+        try (ACLContext context = ACL.as(User.getById("underprivileged", true).impersonate())) {
+            dynamicLoad("require-system-during-load.hpi");
+        }
+    }
+
+
+    @Test
+    @Issue("JENKINS-59775")
+    public void requireSystemDuringStart() throws Exception {
+        r.jenkins.setSecurityRealm(r.createDummySecurityRealm());
+        r.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy());
+        String pluginShortName = "require-system-during-load";
+        dynamicLoad(pluginShortName + ".hpi");
+        try (ACLContext context = ACL.as(User.getById("underprivileged", true).impersonate())) {
+            r.jenkins.pluginManager.start(Collections.singletonList(r.jenkins.pluginManager.getPlugin(pluginShortName)));
+        }
+    }
+
+    @Issue("JENKINS-61071")
+    @Test
+    public void requireSystemInInitializer() throws Exception {
+        r.jenkins.setSecurityRealm(r.createDummySecurityRealm());
+        r.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy());
+        String pluginShortName = "require-system-in-initializer";
+        dynamicLoad(pluginShortName + ".jpi");
+        try (ACLContext context = ACL.as(User.getById("underprivileged", true).impersonate())) {
+            r.jenkins.pluginManager.start(Collections.singletonList(r.jenkins.pluginManager.getPlugin(pluginShortName)));
+        }
     }
 
     private void dynamicLoad(String plugin) throws IOException, InterruptedException, RestartRequiredException {
         PluginManagerUtil.dynamicLoad(plugin, r.jenkins);
     }
 
+    private void dynamicLoadAndDisable(String plugin) throws IOException, InterruptedException, RestartRequiredException {
+        PluginManagerUtil.dynamicLoad(plugin, r.jenkins, true);
+    }
+
     @Test public void uploadDependencyResolution() throws Exception {
+        assumeFalse("TODO: Implement this test for Windows", Functions.isWindows());
         PersistedList<UpdateSite> sites = r.jenkins.getUpdateCenter().getSites();
         sites.clear();
         URL url = PluginManagerTest.class.getResource("/plugins/upload-test-update-center.json");
@@ -425,5 +579,109 @@ public class PluginManagerTest {
         // now the other plugins should have been found as dependencies and downloaded
         assertNotNull(r.jenkins.getPluginManager().getPlugin("Parameterized-Remote-Trigger"));
         assertNotNull(r.jenkins.getPluginManager().getPlugin("token-macro"));
+    }
+
+    @Issue("JENKINS-44898")
+    @WithPlugin("plugin-first.hpi")
+    @Test
+    public void findResourceForPluginFirstClassLoader() throws Exception {
+        PluginWrapper w = r.jenkins.getPluginManager().getPlugin("plugin-first");
+        assertNotNull(w);
+
+        URL fromPlugin = w.classLoader.getResource("org/jenkinsci/plugins/pluginfirst/HelloWorldBuilder/config.jelly");
+        assertNotNull(fromPlugin);
+
+        // This is how UberClassLoader.findResource functions.
+        URL fromToolkit = ClassLoaderReflectionToolkit._findResource(w.classLoader, "org/jenkinsci/plugins/pluginfirst/HelloWorldBuilder/config.jelly");
+
+        assertEquals(fromPlugin, fromToolkit);
+    }
+
+    // Sources for jenkins-50336.hpi are available at https://github.com/Vlatombe/jenkins-50336
+    //
+    // package io.jenkins.plugins;
+    // import org.jenkinsci.plugins.variant.OptionalExtension;
+    // import jenkins.model.GlobalConfiguration;
+    // @OptionalExtension public class MyGlobalConfiguration extends GlobalConfiguration {}
+    //
+    @Issue("JENKINS-50336")
+    @Test
+    public void optionalExtensionCanBeFoundAfterDynamicLoadOfVariant() throws Exception {
+        dynamicLoad("variant.hpi");
+        assertNotNull(r.jenkins.getPluginManager().getPlugin("variant"));
+        dynamicLoad("jenkins-50336.hpi");
+        assertTrue(ExtensionList.lookup(GlobalConfiguration.class).stream().anyMatch(gc -> "io.jenkins.plugins.MyGlobalConfiguration".equals(gc.getClass().getName())));
+    }
+
+    /*
+    credentials - present in update-center.json, not deprecated
+    htmlpublisher - not in update-center.json, not deprecated
+    icon-shim, present in update-center.json, deprecated via label and top-level list
+    token-macro, present in update-center.json, deprecated via label only
+    variant, not in update-center.json, deprecated via top-level list
+     */
+    @Test
+    @Issue("JENKINS-59136")
+    @WithPlugin({"credentials.hpi", "htmlpublisher.jpi", "icon-shim.hpi", "token-macro.hpi", "variant.hpi"})
+    public void testDeprecationNotices() throws Exception {
+        PersistedList<UpdateSite> sites = r.jenkins.getUpdateCenter().getSites();
+        sites.clear();
+        URL url = PluginManagerTest.class.getResource("/plugins/deprecations-update-center.json");
+        UpdateSite site = new UpdateSite(UpdateCenter.ID_DEFAULT, url.toString());
+        sites.add(site);
+
+        assertEquals(FormValidation.ok(), site.updateDirectlyNow(false));
+        assertNotNull(site.getData());
+
+        assertTrue(ExtensionList.lookupSingleton(PluginManager.PluginDeprecationMonitor.class).isActivated());
+
+        final PluginManager pm = Jenkins.get().getPluginManager();
+
+        final PluginWrapper credentials = pm.getPlugin("credentials");
+        Objects.requireNonNull(credentials);
+        assertFalse(credentials.isDeprecated());
+        assertTrue(credentials.getDeprecations().isEmpty());
+
+        final PluginWrapper htmlpublisher = pm.getPlugin("htmlpublisher");
+        Objects.requireNonNull(htmlpublisher);
+        assertFalse(htmlpublisher.isDeprecated());
+        assertTrue(htmlpublisher.getDeprecations().isEmpty());
+
+        final PluginWrapper iconShim = pm.getPlugin("icon-shim");
+        Objects.requireNonNull(iconShim);
+        assertTrue(iconShim.isDeprecated());
+        List<UpdateSite.Deprecation> deprecations = iconShim.getDeprecations();
+        assertEquals(1, deprecations.size());
+        assertEquals("https://jenkins.io/deprecations/icon-shim/", deprecations.get(0).url);
+        assertEquals("https://wiki.jenkins-ci.org/display/JENKINS/Icon+Shim+Plugin", iconShim.getInfo().wiki);
+
+        final PluginWrapper tokenMacro = pm.getPlugin("token-macro");
+        Objects.requireNonNull(tokenMacro);
+        assertTrue(tokenMacro.isDeprecated());
+        deprecations = tokenMacro.getDeprecations();
+        assertEquals(1, deprecations.size());
+        assertEquals("https://wiki.jenkins-ci.org/display/JENKINS/Token+Macro+Plugin", deprecations.get(0).url);
+
+        final PluginWrapper variant = pm.getPlugin("variant");
+        Objects.requireNonNull(variant);
+        assertTrue(variant.isDeprecated());
+        deprecations = variant.getDeprecations();
+        assertEquals(1, deprecations.size());
+        assertEquals("https://jenkins.io/deprecations/variant/", deprecations.get(0).url);
+        assertNull(variant.getInfo());
+    }
+
+    @Issue("JENKINS-62622")
+    @Test
+    @WithPlugin("legacy.hpi")
+    public void doNotThrowWithUnknownPlugins() throws Exception {
+        final UpdateCenter uc = Jenkins.get().getUpdateCenter();
+        Assert.assertNull("This test requires the plugin with ID 'legacy' to not exist in update sites", uc.getPlugin("legacy"));
+
+        // ensure data is loaded - probably unnecessary, but closer to reality
+        Assert.assertSame(uc.getSite("default").updateDirectlyNow().kind, FormValidation.Kind.OK);
+
+        // This would throw NPE
+        uc.getPluginsWithUnavailableUpdates();
     }
 }

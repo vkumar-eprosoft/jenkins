@@ -23,7 +23,6 @@
  */
 package hudson.util;
 
-import hudson.EnvVars;
 import hudson.Functions;
 import hudson.Launcher;
 import hudson.ProxyConfiguration;
@@ -44,7 +43,7 @@ import org.kohsuke.stapler.StaplerResponse;
 import org.kohsuke.stapler.Stapler;
 import org.springframework.util.StringUtils;
 
-import javax.annotation.Nonnull;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import javax.servlet.ServletException;
 
 import java.io.File;
@@ -54,7 +53,9 @@ import java.io.InputStreamReader;
 import java.lang.reflect.Method;
 import java.net.URL;
 import java.net.URLConnection;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
@@ -66,7 +67,7 @@ import static hudson.Util.*;
  * Represents the result of the form field validation.
  *
  * <p>
- * Use one of the factory methods to create an instance, then return it from your <tt>doCheckXyz</tt>
+ * Use one of the factory methods to create an instance, then return it from your {@code doCheckXyz}
  * method. (Via {@link HttpResponse}, the returned object will render the result into {@link StaplerResponse}.)
  * This way of designing form field validation allows you to reuse {@code doCheckXyz()} methods
  * programmatically as well (by using {@link #kind}.
@@ -77,7 +78,7 @@ import static hudson.Util.*;
  * that you may be able to reuse.
  *
  * <p>
- * Also see <tt>doCheckCvsRoot</tt> in <tt>CVSSCM</tt> as an example.
+ * Also see {@code doCheckCvsRoot} in {@code CVSSCM} as an example.
  *
  * <p>
  * This class extends {@link IOException} so that it can be thrown from a method. This allows one to reuse
@@ -136,8 +137,8 @@ public abstract class FormValidation extends IOException implements HttpResponse
      * Sends out a string error message that indicates an error.
      *
      * @param message
-     *      Human readable message to be sent. <tt>error(null)</tt>
-     *      can be used as <tt>ok()</tt>.
+     *      Human readable message to be sent. {@code error(null)}
+     *      can be used as {@code ok()}.
      */
     public static FormValidation error(String message) {
         return errorWithMarkup(message==null?null: Util.escape(message));
@@ -218,7 +219,7 @@ public abstract class FormValidation extends IOException implements HttpResponse
      * @return Validation of the least successful kind aggregating all child messages.
      * @since 1.590
      */
-    public static @Nonnull FormValidation aggregate(@Nonnull Collection<FormValidation> validations) {
+    public static @NonNull FormValidation aggregate(@NonNull Collection<FormValidation> validations) {
         if (validations == null || validations.isEmpty()) return FormValidation.ok();
 
         if (validations.size() == 1) return validations.iterator().next();
@@ -245,8 +246,8 @@ public abstract class FormValidation extends IOException implements HttpResponse
      * attack.
      *
      * @param message
-     *      Human readable message to be sent. <tt>error(null)</tt>
-     *      can be used as <tt>ok()</tt>.
+     *      Human readable message to be sent. {@code error(null)}
+     *      can be used as {@code ok()}.
      */
     public static FormValidation errorWithMarkup(String message) {
         return _errorWithMarkup(message,Kind.ERROR);
@@ -330,54 +331,35 @@ public abstract class FormValidation extends IOException implements HttpResponse
      */
     public static FormValidation validateExecutable(String exe, FileValidator exeValidator) {
         // insufficient permission to perform validation?
-        if(!Jenkins.getInstance().hasPermission(Jenkins.ADMINISTER)) return ok();
+        if(!Jenkins.get().hasPermission(Jenkins.ADMINISTER)) return ok();
+        final FormValidation[] result = {null};
 
-        exe = fixEmpty(exe);
-        if(exe==null)
-            return ok();
-
-        if(exe.indexOf(File.separatorChar)>=0) {
-            // this is full path
-            File f = new File(exe);
-            if(f.exists())  return exeValidator.validate(f);
-
-            File fexe = new File(exe+".exe");
-            if(fexe.exists())   return exeValidator.validate(fexe);
-
-            return error("There's no such file: "+exe);
-        }
-
-        // look in PATH
-        String path = EnvVars.masterEnvVars.get("PATH");
-        String tokenizedPath = "";
-        String delimiter = null;
-        if(path!=null) {
-            for (String _dir : Util.tokenize(path.replace("\\", "\\\\"),File.pathSeparator)) {
-                if (delimiter == null) {
-                  delimiter = ", ";
-                }
-                else {
-                  tokenizedPath += delimiter;
+        try {
+            DOSToUnixPathHelper.iteratePath(exe, new DOSToUnixPathHelper.Helper() {
+                @Override
+                public void ok() {
+                    result[0] = FormValidation.ok();
                 }
 
-                tokenizedPath += _dir.replace('\\', '/');
+                @Override
+                public void checkExecutable(File fexe) {
+                    result[0] = exeValidator.validate(fexe);
+                }
 
-                File dir = new File(_dir);
+                @Override
+                public void error(String string) {
+                    result[0] = FormValidation.error(string);
+                }
 
-                File f = new File(dir,exe);
-                if(f.exists())  return exeValidator.validate(f);
-
-                File fexe = new File(dir,exe+".exe");
-                if(fexe.exists())   return exeValidator.validate(fexe);
-            }
-
-            tokenizedPath += ".";
-        } else {
-            tokenizedPath = "unavailable.";
+                @Override
+                public void validate(File fexe) {
+                    result[0] = exeValidator.validate(fexe);
+                }
+            });
+            return result[0];
+        } catch (Exception e) {
+            return FormValidation.error(e, "Unexpected error");
         }
-
-        // didn't find it
-        return error("There's no such executable "+exe+" in PATH: "+tokenizedPath);
     }
 
     /**
@@ -387,6 +369,30 @@ public abstract class FormValidation extends IOException implements HttpResponse
         try {
             if(Integer.parseInt(value)<0)
                 return error(hudson.model.Messages.Hudson_NotANonNegativeNumber());
+            return ok();
+        } catch (NumberFormatException e) {
+            return error(hudson.model.Messages.Hudson_NotANumber());
+        }
+    }
+
+    /**
+     * Make sure that the given string is an integer in the range specified by the lower and upper bounds (both inclusive)
+     *
+     * @param value the value to check
+     * @param lower the lower bound (inclusive)
+     * @param upper the upper bound (inclusive)
+     *
+     * @since 2.104
+     */
+    public static FormValidation validateIntegerInRange(String value, int lower, int upper) {
+        try {
+            int intValue = Integer.parseInt(value);
+            if (intValue < lower) {
+                return error(hudson.model.Messages.Hudson_MustBeAtLeast(lower));
+            }
+            if (intValue > upper) {
+                return error(hudson.model.Messages.Hudson_MustBeAtMost(upper));
+            }
             return ok();
         } catch (NumberFormatException e) {
             return error(hudson.model.Messages.Hudson_NotANumber());
@@ -437,9 +443,9 @@ public abstract class FormValidation extends IOException implements HttpResponse
             if(!allowEmpty && v.length()==0)
                 return error(errorMessage);
 
-            com.trilead.ssh2.crypto.Base64.decode(v.toCharArray());
+            Base64.getDecoder().decode(v.getBytes(StandardCharsets.UTF_8));
             return ok();
-        } catch (IOException e) {
+        } catch (IllegalArgumentException e) {
             return error(errorMessage);
         }
     }
@@ -473,7 +479,7 @@ public abstract class FormValidation extends IOException implements HttpResponse
         protected boolean findText(BufferedReader in, String literal) throws IOException {
             String line;
             while((line=in.readLine())!=null)
-                if(line.indexOf(literal)!=-1)
+                if(line.contains(literal))
                     return true;
             return false;
         }
@@ -511,7 +517,7 @@ public abstract class FormValidation extends IOException implements HttpResponse
         }
 
         /**
-         * Implement the actual form validation logic, by using other convenience methosd defined in this class.
+         * Implement the actual form validation logic, by using other convenience methods defined in this class.
          * If you are not using any of those, you don't need to extend from this class.
          */
         protected abstract FormValidation check() throws IOException, ServletException;
@@ -570,7 +576,7 @@ public abstract class FormValidation extends IOException implements HttpResponse
 
             method = ReflectionUtils.getPublicMethodNamed(descriptor.getClass(), "doCheck" + capitalizedFieldName);
             if(method !=null) {
-                names = new ArrayList<String>();
+                names = new ArrayList<>();
                 findParameters(method);
             } else {
                 names = null;
@@ -620,7 +626,7 @@ public abstract class FormValidation extends IOException implements HttpResponse
                     buf.append("+qs(this).addThis()");
 
                     for (String name : names) {
-                        buf.append(".nearBy('"+name+"')");
+                        buf.append(".nearBy('").append(name).append("')");
                     }
                     buf.append(".toString()");
                 }
@@ -638,7 +644,7 @@ public abstract class FormValidation extends IOException implements HttpResponse
          */
         public String toStemUrl() {
             if (names==null)    return null;
-            return jsStringEscape(Descriptor.getCurrentDescriptorByNameUrl()) + '/' + relativePath();
+            return Descriptor.getCurrentDescriptorByNameUrl() + '/' + relativePath();
         }
 
         public String getDependsOn() {

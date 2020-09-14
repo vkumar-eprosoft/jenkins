@@ -57,18 +57,18 @@ import java.util.Map.Entry;
  *
  * BeanBuilder builder = new BeanBuilder()
  * builder.beans {
- *   dataSource(BasicDataSource) {                  // <--- invokeMethod
+ *   dataSource(BasicDataSource) {                  // ← invokeMethod
  *      driverClassName = "org.hsqldb.jdbcDriver"
  *      url = "jdbc:hsqldb:mem:grailsDB"
- *      username = "sa"                            // <-- setProperty
+ *      username = "sa"                            // ← setProperty
  *      password = ""
  *      settings = [mynew:"setting"]
  *  }
  *  sessionFactory(SessionFactory) {
- *  	   dataSource = dataSource                 // <-- getProperty for retrieving refs
+ *  	   dataSource = dataSource                 // ← getProperty for retrieving refs
  *  }
  *  myService(MyService) {
- *      nestedBean = { AnotherBean bean->          // <-- setProperty with closure for nested bean
+ *      nestedBean = { AnotherBean bean-&gt;          // ← setProperty with closure for nested bean
  *      		dataSource = dataSource
  *      }
  *  }
@@ -87,7 +87,7 @@ public class BeanBuilder extends GroovyObjectSupport {
     private static final String ANONYMOUS_BEAN = "bean";
     private RuntimeSpringConfiguration springConfig = new DefaultRuntimeSpringConfiguration();
     private BeanConfiguration currentBeanConfig;
-    private Map<String,DeferredProperty> deferredProperties = new HashMap<String,DeferredProperty>();
+    private Map<String,DeferredProperty> deferredProperties = new HashMap<>();
     private ApplicationContext parentCtx;
     private Map binding = new HashMap();
     private ClassLoader classLoader = null;
@@ -147,7 +147,7 @@ public class BeanBuilder extends GroovyObjectSupport {
 	}
 
 	/**
-	 * Retrieves the RuntimeSpringConfiguration instance used the the BeanBuilder
+	 * Retrieves the RuntimeSpringConfiguration instance used by the BeanBuilder
 	 * @return The RuntimeSpringConfiguration instance
 	 */
 	public RuntimeSpringConfiguration getSpringConfig() {
@@ -172,7 +172,7 @@ public class BeanBuilder extends GroovyObjectSupport {
      */
     public Map<String,BeanDefinition> getBeanDefinitions() {
 
-        Map<String,BeanDefinition> beanDefinitions = new HashMap<String,BeanDefinition>();
+        Map<String,BeanDefinition> beanDefinitions = new HashMap<>();
         for (String beanName : getSpringConfig().getBeanNames()) {
             BeanDefinition bd = getSpringConfig()
                     .getBeanConfig(beanName)
@@ -198,7 +198,7 @@ public class BeanBuilder extends GroovyObjectSupport {
 	/**
 	 * This class is used to defer the adding of a property to a bean definition until later
 	 * This is for a case where you assign a property to a list that may not contain bean references at
-	 * that point of asignment, but may later hence it would need to be managed
+	 * that point of assignment, but may later hence it would need to be managed
 	 *
 	 * @author Graeme Rocher
 	 */
@@ -296,18 +296,6 @@ public class BeanBuilder extends GroovyObjectSupport {
                 beanConfig.setPropertyValue(property, newValue);
             }
 		}
-	}
-	/**
-	 * Takes a resource pattern as (@see org.springframework.core.io.support.PathMatchingResourcePatternResolver)
-	 * This allows you load multiple bean resources in this single builder
-	 *
-	 * eg loadBeans("classpath:*Beans.groovy")
-	 *
-	 * @param resourcePattern
-	 * @throws IOException When the path cannot be matched
-	 */
-	public void loadBeans(String resourcePattern) throws IOException {
-		loadBeans(new PathMatchingResourcePatternResolver().getResources(resourcePattern));
 	}
 
 	/**

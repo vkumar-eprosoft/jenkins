@@ -23,9 +23,12 @@
  */
 package hudson.lifecycle;
 
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import jenkins.model.Jenkins;
 
 import java.io.IOException;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * {@link Lifecycle} for Hudson installed as SMF service.
@@ -37,10 +40,18 @@ public class SolarisSMFLifecycle extends Lifecycle {
      * In SMF managed environment, just commit a suicide and the service will be restarted by SMF.
      */
     @Override
+    @SuppressFBWarnings(value = "DM_EXIT", justification = "Exit is really intended.")
     public void restart() throws IOException, InterruptedException {
-        Jenkins h = Jenkins.getInstanceOrNull(); // guard against repeated concurrent calls to restart
-        if (h != null)
-            h.cleanUp();
+        Jenkins jenkins = Jenkins.getInstanceOrNull(); // guard against repeated concurrent calls to restart
+        try {
+            if (jenkins != null) {
+                jenkins.cleanUp();
+            }
+        } catch (Exception e) {
+            LOGGER.log(Level.SEVERE, "Failed to clean up. Restart will continue.", e);
+        }
         System.exit(0);
     }
+
+    private static final Logger LOGGER = Logger.getLogger(SolarisSMFLifecycle.class.getName());
 }

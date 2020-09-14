@@ -24,13 +24,20 @@
 package hudson.triggers;
 
 import hudson.model.AperiodicWork;
+import hudson.model.AsyncAperiodicWork;
+import hudson.model.AsyncPeriodicWork;
 import hudson.model.PeriodicWork;
 import hudson.security.ACL;
+
+import java.io.File;
 import java.util.TimerTask;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-import org.acegisecurity.context.SecurityContext;
-import org.acegisecurity.context.SecurityContextHolder;
+
+import hudson.security.ACLContext;
+import jenkins.model.Jenkins;
+import jenkins.util.SystemProperties;
+import jenkins.util.Timer;
 
 /**
  * Wrapper so that a fatal error in {@link TimerTask} will not terminate the timer.
@@ -42,20 +49,78 @@ import org.acegisecurity.context.SecurityContextHolder;
  * @since 1.124
  */
 public abstract class SafeTimerTask extends TimerTask {
+
+    /**
+     * Lambda-friendly means of creating a task.
+     * @since 2.216
+     */
+    public static SafeTimerTask of(ExceptionRunnable r) {
+        return new SafeTimerTask() {
+            @Override
+            protected void doRun() throws Exception {
+                r.run();
+            }
+        };
+    }
+    /**
+     * @see #of
+     * @since 2.216
+     */
+    @FunctionalInterface
+    public interface ExceptionRunnable {
+        void run() throws Exception;
+    }
+
+    /**
+     * System property to change the location where (tasks) logging should be sent.
+     * <p><strong>Beware: changing it while Jenkins is running gives no guarantee logs will be sent to the new location
+     * until it is restarted.</strong></p>
+     */
+    static final String LOGS_ROOT_PATH_PROPERTY = SafeTimerTask.class.getName()+".logsTargetDir";
+
+    /**
+     * Local marker to know if the information about using non default root directory for logs has already been logged at least once.
+     * @see #LOGS_ROOT_PATH_PROPERTY
+     */
+    private static boolean ALREADY_LOGGED = false;
+
     public final void run() {
         // background activity gets system credential,
         // just like executors get it.
-        SecurityContext oldContext = ACL.impersonate(ACL.SYSTEM);
-        try {
+        try (ACLContext ctx = ACL.as(ACL.SYSTEM)) {
             doRun();
         } catch(Throwable t) {
             LOGGER.log(Level.SEVERE, "Timer task "+this+" failed",t);
-        } finally {
-            SecurityContextHolder.setContext(oldContext);
         }
     }
 
     protected abstract void doRun() throws Exception;
+
+
+    /**
+     * The root path that should be used to put logs related to the tasks running in Jenkins.
+     *
+     * @see AsyncAperiodicWork#getLogFile()
+     * @see AsyncPeriodicWork#getLogFile()
+     * @return the path where the logs should be put.
+     * @since 2.114
+     */
+    public static File getLogsRoot() {
+        String tagsLogsPath = SystemProperties.getString(LOGS_ROOT_PATH_PROPERTY);
+        if (tagsLogsPath == null) {
+            return new File(Jenkins.get().getRootDir(), "logs");
+        } else {
+            Level logLevel = Level.INFO;
+            if (ALREADY_LOGGED) {
+                logLevel = Level.FINE;
+            }
+            LOGGER.log(logLevel,
+                       "Using non default root path for tasks logging: {0}. (Beware: no automated migration if you change or remove it again)",
+                       LOGS_ROOT_PATH_PROPERTY);
+            ALREADY_LOGGED = true;
+            return new File(tagsLogsPath);
+        }
+    }
 
     private static final Logger LOGGER = Logger.getLogger(SafeTimerTask.class.getName());
 }

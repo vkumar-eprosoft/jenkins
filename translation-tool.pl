@@ -27,7 +27,7 @@
 # Perl script to generate missing translation keys and missing properties files,
 # to remove unused keys, and to convert utf8 properties files to iso or ascii.
 #
-# 1.- It recursively looks for files in a folder, and analizes them to extract the
+# 1.- It recursively looks for files in a folder, and analyzes them to extract the
 #     keys being used in the application.
 # 2.- If --add=true, it generates the appropriate file for the desired language and adds
 #     these keys to it, adding the english text as a reference.
@@ -42,10 +42,12 @@
 # to Jenkins instead of the old name.
 
 use strict;
+use File::Basename;
 use File::Find;
+use File::Path;
 
-my ($lang, $editor, $dir, $toiso, $toascii, $add, $remove, $reuse) = (undef, undef, "./", undef, undef, undef, undef, undef);
-my ($tfiles, $tkeys, $tmissing, $tunused, $tempty, $tsame, $tnojenkins) = (0, 0, 0, 0, 0, 0, 0);
+my ($lang, $editor, $dir, $toiso, $toascii, $add, $remove, $reuse, $counter, $target) = (undef, undef, "./", undef, undef, undef, undef, undef, undef, "./");
+my ($tfiles, $tkeys, $tmissing, $tunused, $tempty, $tsame, $tnojenkins, $countervalue) = (0, 0, 0, 0, 0, 0, 0, 1);
 ## read arguments
 foreach (@ARGV) {
   if (/^--lang=(.*)$/) {
@@ -62,6 +64,10 @@ foreach (@ARGV) {
     $remove = 1;
   } elsif (/^--reuse=(.*)$/) {
     $reuse = $1;
+  } elsif (/^--counter$/ || /^--counter=true$/) {
+     $counter = 1;
+  } elsif (/^--target=(.*)$/) {
+     $target = $1;
   } else {
     $dir=$_;
   }
@@ -74,13 +80,13 @@ if (!$lang || $lang eq "en") {
   exit();
 }
 
-print STDERR "\rWait ...";
+print STDERR "Finding files ...\n";
 ## look for Message.properties and *.jelly files in the provided folder
 my @files = findTranslatableFiles($dir);
+print STDERR "Found ".(scalar keys @files)." files\n";
 
 ## load a cache with keys already translated to utilize in the case the same key is used
 my %cache = loadAllTranslatedKeys($reuse, $lang) if ($reuse && -e $reuse);
-print STDERR "\r             ";
 
 ## process each file
 foreach (@files) {
@@ -120,6 +126,7 @@ sub processFile {
    #  efile -> english file
    my $file = shift;
    my ($ofile, $efile) = ($file, $file);
+   $ofile =~ s/$dir/$target/;
    $ofile =~ s/(\.jelly)|(\.properties)/_$lang.properties/;
    $efile =~ s/(\.jelly)/.properties/;
 
@@ -189,9 +196,19 @@ sub processFile {
       open(F, ">>$ofile");
       foreach (keys %keys) {
          if (!$okeys{$_}) {
-           if (!defined($okeys{$_})) {
-             print F "# $ekeys{$_}\n" if ($ekeys{$_} && $ekeys{$_} ne "");
-             print F "$_=" . (defined($cache{$_}) ? $cache{$_} : "") . "\n";
+            if (!defined($okeys{$_})) {
+               print F "$_=";
+               if (defined($cache{$_})) {
+                  print F $cache{$_}."\n";
+               } else {
+                  if ($counter) {
+                     # add unique value for each added translation
+                     print F "---TranslateMe ".$countervalue."--- ".($ekeys{$_} ? $ekeys{$_} : $_)."\n";
+                  } else {
+                     print F "\n";
+                  }
+               }
+               $countervalue++;
            }
          }
       }
@@ -269,9 +286,9 @@ sub loadPropertiesFile {
    my %ret;
    if (open(F, "$file")) {
       my ($cont, $key, $val) = (0, undef, undef);
-      while(<F>){
+      while (<F>) {
          s/[\r\n]+//;
-         $ret{$key} .= " \n# $1" if ($cont && /\s*(.*)[\\\s]*$/);
+         $ret{$key} .= "\n$1" if ($cont && /\s*(.*)[\\\s]*$/);
          if (/^([^#\s].*?[^\\])=(.*)[\s\\]*$/) {
            ($key, $val) = (trim($1), trim($2));
            $ret{$key}=$val;
@@ -279,7 +296,7 @@ sub loadPropertiesFile {
          $cont = (/\\\s*$/) ? 1 : 0;
       }
       close(F);
-      $ret{$key} .= " \n# $1" if ($cont && /\s*(.*)[\\\s]*$/);
+      $ret{$key} .= "\n$1" if ($cont && /\s*(.*)[\\\s]*$/);
    }
    return %ret;
 }
@@ -357,6 +374,7 @@ sub isUtf8 {
 # Note: the license is read from the head of this file
 my $license;
 sub printLicense {
+   my $file = shift;
    if (!$license && open(F, $0)) {
       $license = "";
       my $on = 0;
@@ -368,7 +386,11 @@ sub printLicense {
       close(F);
    }
    if ($license && $license ne "") {
-      open(F, ">" . shift) || die $!;
+      my $dirname = dirname($file);
+      unless (-d $dirname) {
+         mkpath($dirname);
+      }
+      open(F, ">" . $file) || die $!;
       print F "$license\n";
       close(F);
    }
@@ -400,6 +422,9 @@ Usage: $0 --lang=xx [options] [dir]
      --editor=command     -> command to run over each updated file, implies add=true (default none)
      --reuse=folder       -> load a cache with keys already translated in the folder provided in
                              order to utilize them when the same key appears
+     --counter=true       -> to each translated key, unique value is added to easily identify match missing translation
+                             with value in source code (default false)
+     --target=folder      -> target folder for writing files
 
    Examples:
      - Look for Spanish files with incomplete keys in the 'main' folder,

@@ -1,4 +1,4 @@
-/**
+/*
  * Copyright (c) 2008-2010 Yahoo! Inc.
  * All rights reserved.
  * The copyrights to the contents of this file are licensed under the MIT License (http://www.opensource.org/licenses/mit-license.php)
@@ -6,7 +6,7 @@
 
 package hudson.security.csrf;
 
-import com.gargoylesoftware.htmlunit.FailingHttpStatusCodeException;
+import com.gargoylesoftware.htmlunit.Page;
 import com.gargoylesoftware.htmlunit.html.HtmlPage;
 import net.sf.json.JSONObject;
 import org.junit.Before;
@@ -19,10 +19,11 @@ import org.jvnet.hudson.test.recipes.PresetData;
 
 import java.net.HttpURLConnection;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
 
 /**
- *
  * @author dty
  */
 public class DefaultCrumbIssuerTest {
@@ -58,13 +59,11 @@ public class DefaultCrumbIssuerTest {
         HtmlPage p = wc.goTo("configure");
 
         wc.removeRequestHeader(HEADER_NAME);
-        try {
-            // The crumb should no longer match if we remove the proxy info
-            r.submit(p.getFormByName("config"));
-        }
-        catch (FailingHttpStatusCodeException e) {
-            assertEquals(403,e.getStatusCode());
-        }
+        
+        wc.setThrowExceptionOnFailingStatusCode(false);
+        // The crumb should no longer match if we remove the proxy info
+        Page page = r.submit(p.getFormByName("config"));
+        assertEquals(HttpURLConnection.HTTP_FORBIDDEN, page.getWebResponse().getStatusCode());
     }
 
     @Issue("JENKINS-3854")
@@ -133,6 +132,23 @@ public class DefaultCrumbIssuerTest {
         assertEquals(r.jenkins.getCrumbIssuer().getCrumbRequestField(),jsonObject.getString("crumbRequestField"));
         assertTrue(jsonObject.getString("crumb").matches("[0-9a-f]+"));
         wc.assertFails("crumbIssuer/api/json?jsonp=hack", HttpURLConnection.HTTP_FORBIDDEN);
+    }
+
+    @Issue("JENKINS-34254")
+    @Test public void testRequirePostErrorPageCrumb() throws Exception {
+        r.jenkins.setCrumbIssuer(new DefaultCrumbIssuer(false));
+        WebClient wc = r.createWebClient()
+                .withThrowExceptionOnFailingStatusCode(false);
+
+        Page page = wc.goTo("quietDown");
+        assertEquals("expect HTTP 405 method not allowed", 
+                HttpURLConnection.HTTP_BAD_METHOD,
+                page.getWebResponse().getStatusCode());
+
+        HtmlPage retry = (HtmlPage) wc.getCurrentWindow().getEnclosedPage();
+        HtmlPage success = r.submit(retry.getFormByName("retry"));
+        assertEquals(HttpURLConnection.HTTP_OK, success.getWebResponse().getStatusCode());
+        assertTrue("quieting down", r.jenkins.isQuietingDown());
     }
 
 }

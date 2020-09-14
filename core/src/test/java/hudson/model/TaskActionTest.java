@@ -7,7 +7,6 @@ import java.io.ByteArrayOutputStream;
 import hudson.console.AnnotatedLargeText;
 import hudson.security.ACL;
 import hudson.security.Permission;
-import org.acegisecurity.Authentication;
 import org.junit.Test;
 
 /**
@@ -45,11 +44,7 @@ public class TaskActionTest {
         }
 
         protected ACL getACL() {
-            return new ACL() {
-                public boolean hasPermission(Authentication a, Permission permission) {
-                     return true;
-                }
-            };
+            return ACL.lambda((a, p) -> true);
         }
     }
 
@@ -62,7 +57,9 @@ public class TaskActionTest {
             Thread.sleep(10);
         }
         ByteArrayOutputStream os = new ByteArrayOutputStream();
-        annotatedText.writeLogTo(0, os);
+        final long length = annotatedText.writeLogTo(0, os);
+        // Windows based systems will be 220, linux base 219
+        assertTrue("length should be longer or even 219", length >= 219);
         assertTrue(os.toString("UTF-8").startsWith("a linkCompleted"));
     }
 }

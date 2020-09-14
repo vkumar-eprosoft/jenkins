@@ -28,19 +28,25 @@ import hudson.Extension;
 import hudson.ExtensionPoint;
 import hudson.model.AbstractDescribableImpl;
 import hudson.model.Descriptor;
-import hudson.model.Descriptor.FormException;
+import hudson.model.View;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import jenkins.model.GlobalConfiguration;
 import jenkins.model.Jenkins;
 import hudson.model.ListView;
 import net.sf.json.JSONObject;
 import org.jenkinsci.Symbol;
+import org.kohsuke.accmod.Restricted;
+import org.kohsuke.accmod.restrictions.NoExternalUse;
 import org.kohsuke.stapler.StaplerRequest;
 
 /**
  * Extension point for adding a ViewsTabBar header to Projects {@link ListView}.
  *
  * <p>
- * This object must have the <tt>viewTabs.jelly</tt>. This view
+ * This object must have the {@code viewTabs.jelly}. This view
  * is called once when the project views main panel is built.
  * The "views" attribute is set to the "Collection of views".
  *
@@ -57,12 +63,33 @@ public abstract class ViewsTabBar extends AbstractDescribableImpl<ViewsTabBar> i
      * Returns all the registered {@link ViewsTabBar} descriptors.
      */
     public static DescriptorExtensionList<ViewsTabBar, Descriptor<ViewsTabBar>> all() {
-        return Jenkins.getInstance().<ViewsTabBar, Descriptor<ViewsTabBar>>getDescriptorList(ViewsTabBar.class);
+        return Jenkins.get().getDescriptorList(ViewsTabBar.class);
     }
 
     @Override
     public ViewsTabBarDescriptor getDescriptor() {
         return (ViewsTabBarDescriptor)super.getDescriptor();
+    }
+
+    /**
+     * Sorts the views by {@link View#getDisplayName()}.
+     *
+     * @param views the views.
+     * @return the sorted views
+     * @since 2.37
+     */
+    @NonNull
+    @Restricted(NoExternalUse.class)
+    @SuppressWarnings("unused") // invoked from stapler view
+    public List<View> sort(@NonNull List<? extends View> views) {
+        List<View> result = new ArrayList<>(views);
+        result.sort(new Comparator<View>() {
+            @Override
+            public int compare(View o1, View o2) {
+                return o1.getDisplayName().compareTo(o2.getDisplayName());
+            }
+        });
+        return result;
     }
 
     /**
@@ -73,13 +100,13 @@ public abstract class ViewsTabBar extends AbstractDescribableImpl<ViewsTabBar> i
     @Extension(ordinal=310) @Symbol("viewsTabBar")
     public static class GlobalConfigurationImpl extends GlobalConfiguration {
         public ViewsTabBar getViewsTabBar() {
-            return Jenkins.getInstance().getViewsTabBar();
+            return Jenkins.get().getViewsTabBar();
         }
 
         @Override
         public boolean configure(StaplerRequest req, JSONObject json) throws FormException {
             // for compatibility reasons, the actual value is stored in Jenkins
-            Jenkins j = Jenkins.getInstance();
+            Jenkins j = Jenkins.get();
 
             if (json.has("viewsTabBar")) {
                 j.setViewsTabBar(req.bindJSON(ViewsTabBar.class,json.getJSONObject("viewsTabBar")));

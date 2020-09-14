@@ -30,13 +30,12 @@ import hudson.model.Run;
 
 import jenkins.widgets.HistoryPageEntry;
 import jenkins.widgets.HistoryPageFilter;
-import org.apache.commons.collections.IteratorUtils;
 import org.kohsuke.stapler.Header;
 import org.kohsuke.stapler.Stapler;
 import org.kohsuke.stapler.StaplerRequest;
 import org.kohsuke.stapler.StaplerResponse;
 
-import javax.annotation.CheckForNull;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
 import javax.servlet.ServletException;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -89,14 +88,14 @@ public class HistoryWidget<O extends ModelObject,T> extends Widget {
      *      The parent model object that owns this widget.
      */
     public HistoryWidget(O owner, Iterable<T> baseList, Adapter<? super T> adapter) {
-	StaplerRequest currentRequest = Stapler.getCurrentRequest();
+        StaplerRequest currentRequest = Stapler.getCurrentRequest();
         this.adapter = adapter;
         this.baseList = baseList;
         this.baseUrl = Functions.getNearestAncestorUrl(currentRequest,owner);
         this.owner = owner;
         this.newerThan = getPagingParam(currentRequest, "newer-than");
         this.olderThan = getPagingParam(currentRequest, "older-than");
-        this.searchString = currentRequest.getParameter("search");;
+        this.searchString = currentRequest.getParameter("search");
     }
 
     /**
@@ -113,6 +112,20 @@ public class HistoryWidget<O extends ModelObject,T> extends Widget {
 
     public String getFirstTransientBuildKey() {
         return firstTransientBuildKey;
+    }
+
+    /**
+     * Calculates the first transient build record. Everything ≥ this will be discarded when AJAX call is made.
+     *
+     * @param historyPageFilter
+     *      The history page filter containing the list of builds.
+     * @return
+     *      The history page filter that was passed in.
+     */
+    @SuppressWarnings("unchecked")
+    protected HistoryPageFilter updateFirstTransientBuildKey(HistoryPageFilter historyPageFilter) {
+        updateFirstTransientBuildKey(historyPageFilter.runs);
+        return historyPageFilter;
     }
 
     private Iterable<HistoryPageEntry<T>> updateFirstTransientBuildKey(Iterable<HistoryPageEntry<T>> source) {
@@ -148,15 +161,15 @@ public class HistoryWidget<O extends ModelObject,T> extends Widget {
         Iterator<T> iterator = historyItemList.iterator();
 
         if (!iterator.hasNext()) {
-            return Collections.EMPTY_LIST;
+            return Collections.emptyList();
         }
 
-        List<HistoryPageEntry<T>> pageEntries = new ArrayList<HistoryPageEntry<T>>();
+        List<HistoryPageEntry<T>> pageEntries = new ArrayList<>();
         while (iterator.hasNext()) {
-	        pageEntries.add(new HistoryPageEntry<T>(iterator.next()));
+            pageEntries.add(new HistoryPageEntry<>(iterator.next()));
         }
 
-	return pageEntries;
+        return pageEntries;
     }
 
     /**
@@ -165,13 +178,13 @@ public class HistoryWidget<O extends ModelObject,T> extends Widget {
     public HistoryPageFilter getHistoryPageFilter() {
         HistoryPageFilter<T> historyPageFilter = newPageFilter();
 
-        historyPageFilter.add(IteratorUtils.toList(baseList.iterator()));
+        historyPageFilter.add(baseList);
         historyPageFilter.widget = this;
-        return historyPageFilter;
+        return updateFirstTransientBuildKey(historyPageFilter);
     }
 
     protected HistoryPageFilter<T> newPageFilter() {
-        HistoryPageFilter<T> historyPageFilter = new HistoryPageFilter<T>(THRESHOLD);
+        HistoryPageFilter<T> historyPageFilter = new HistoryPageFilter<>(THRESHOLD);
 
         if (newerThan != null) {
             historyPageFilter.setNewerThan(newerThan);
@@ -207,7 +220,7 @@ public class HistoryWidget<O extends ModelObject,T> extends Widget {
         rsp.setContentType("text/html;charset=UTF-8");
 
         // pick up builds to send back
-        List<T> items = new ArrayList<T>();
+        List<T> items = new ArrayList<>();
 
         if (n != null) {
             String nn=null; // we'll compute next n here
@@ -239,7 +252,6 @@ public class HistoryWidget<O extends ModelObject,T> extends Widget {
         }
 
         HistoryPageFilter page = getHistoryPageFilter();
-        updateFirstTransientBuildKey(page.runs);
         req.getView(page,"ajaxBuildHistory.jelly").forward(req,rsp);
     }
 
@@ -273,7 +285,7 @@ public class HistoryWidget<O extends ModelObject,T> extends Widget {
             return null;
         }
         try {
-            return new Long(paramVal);
+            return Long.valueOf(paramVal);
         } catch (NumberFormatException nfe) {
             return null;
         }

@@ -25,7 +25,7 @@
 package hudson.cli;
 
 import static hudson.cli.CLICommandInvoker.Matcher.*;
-import static org.junit.Assert.*;
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.CoreMatchers.*;
 import static org.hamcrest.text.StringContainsInOrder.stringContainsInOrder;
 
@@ -100,9 +100,9 @@ public class HelpCommandTest {
     }
 
     private void assertContainsUsageOfMethodCommand(String text) {
-        assertThat(text, containsString("offline-node NAME [-m VAL]"));
+        assertThat(text, containsString("offline-node NAME ... [-m VAL]"));
         assertThat(text, containsStrings("NAME", "Agent name, or empty string for master"));
-        assertThat(text, containsStrings("-m VAL", "Record the note about why you are disconnecting this node"));
+        assertThat(text, containsStrings("-m VAL", "Record the reason about why you are disconnecting this node"));
     }
 
     private static Matcher<String> containsStrings(String... strings) {

@@ -2,10 +2,10 @@ package hudson.slaves;
 
 import hudson.model.Computer;
 import hudson.model.Node;
-import hudson.util.TimeUnit2;
+import java.util.concurrent.TimeUnit;
 import jenkins.model.Jenkins;
 
-import javax.annotation.concurrent.GuardedBy;
+import net.jcip.annotations.GuardedBy;
 import java.io.IOException;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -47,7 +47,7 @@ public class CloudSlaveRetentionStrategy<T extends Computer> extends RetentionSt
      * To actually deallocate the resource tied to this {@link Node}, implement {@link Computer#onRemoved()}.
      */
     protected void kill(Node n) throws IOException {
-        Jenkins.getInstance().removeNode(n);
+        Jenkins.get().removeNode(n);
     }
 
     /**
@@ -72,7 +72,7 @@ public class CloudSlaveRetentionStrategy<T extends Computer> extends RetentionSt
     }
 
     // for debugging, it's convenient to be able to reduce this time
-    public static long TIMEOUT = SystemProperties.getLong(CloudSlaveRetentionStrategy.class.getName()+".timeout", TimeUnit2.MINUTES.toMillis(10));
+    public static long TIMEOUT = SystemProperties.getLong(CloudSlaveRetentionStrategy.class.getName()+".timeout", TimeUnit.MINUTES.toMillis(10));
 
     private static final Logger LOGGER = Logger.getLogger(CloudSlaveRetentionStrategy.class.getName());
 }

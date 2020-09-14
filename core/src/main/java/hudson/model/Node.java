@@ -39,7 +39,7 @@ import hudson.remoting.Callable;
 import hudson.remoting.VirtualChannel;
 import hudson.security.ACL;
 import hudson.security.AccessControlled;
-import hudson.security.Permission;
+import hudson.slaves.Cloud;
 import hudson.slaves.ComputerListener;
 import hudson.slaves.NodeDescriptor;
 import hudson.slaves.NodeProperty;
@@ -57,14 +57,18 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
 import java.util.logging.Logger;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import jenkins.model.Jenkins;
+import jenkins.util.SystemProperties;
 import jenkins.util.io.OnMaster;
 import net.sf.json.JSONObject;
 import org.acegisecurity.Authentication;
 import org.jvnet.localizer.Localizable;
+import org.kohsuke.accmod.Restricted;
+import org.kohsuke.accmod.restrictions.ProtectedExternally;
 import org.kohsuke.stapler.BindInterceptor;
 import org.kohsuke.stapler.Stapler;
 import org.kohsuke.stapler.StaplerRequest;
@@ -94,6 +98,9 @@ public abstract class Node extends AbstractModelObject implements Reconfigurable
 
     private static final Logger LOGGER = Logger.getLogger(Node.class.getName());
 
+    /** @see <a href="https://issues.jenkins-ci.org/browse/JENKINS-46652">JENKINS-46652</a> */
+    public static /* not final */ boolean SKIP_BUILD_CHECK_ON_FLYWEIGHTS = SystemProperties.getBoolean(Node.class.getName() + ".SKIP_BUILD_CHECK_ON_FLYWEIGHTS", true);
+
     /**
      * Newly copied agents get this flag set, so that Jenkins doesn't try to start/remove this node until its configuration
      * is saved once.
@@ -117,13 +124,12 @@ public abstract class Node extends AbstractModelObject implements Reconfigurable
     }
 
     /**
-     * {@inheritDoc}
      * @since 1.635.
      */
     @Override
     public void save() throws IOException {
         // this should be a no-op unless this node instance is the node instance in Jenkins' list of nodes
-        // thus where Jenkins.getInstance() == null there is no list of nodes, so we do a no-op
+        // thus where Jenkins.get() == null there is no list of nodes, so we do a no-op
         // Nodes.updateNode(n) will only persist the node record if the node instance is in the list of nodes
         // so either path results in the same behaviour: the node instance is only saved if it is in the list of nodes
         // for all other cases we do not know where to persist the node record and hence we follow the default
@@ -141,7 +147,7 @@ public abstract class Node extends AbstractModelObject implements Reconfigurable
      *      "" if this is master
      */
     @Exported(visibility=999)
-    @Nonnull
+    @NonNull
     public abstract String getNodeName();
 
     /**
@@ -174,7 +180,7 @@ public abstract class Node extends AbstractModelObject implements Reconfigurable
     /**
      * Returns the number of {@link Executor}s.
      *
-     * This may be different from <code>getExecutors().size()</code>
+     * This may be different from {@code getExecutors().size()}
      * because it takes time to adjust the number of executors.
      */
     @Exported
@@ -197,7 +203,7 @@ public abstract class Node extends AbstractModelObject implements Reconfigurable
      */
     @CheckForNull
     public final Computer toComputer() {
-        AbstractCIBase ciBase = Jenkins.getInstance();
+        AbstractCIBase ciBase = Jenkins.get();
         return ciBase.getComputer(this);
     }
 
@@ -214,8 +220,13 @@ public abstract class Node extends AbstractModelObject implements Reconfigurable
 
     /**
      * Creates a new {@link Computer} object that acts as the UI peer of this {@link Node}.
+     * 
      * Nobody but {@link Jenkins#updateComputerList()} should call this method.
+     * @return Created instance of the computer.
+     *         Can be {@code null} if the {@link Node} implementation does not support it (e.g. {@link Cloud} agent).
      */
+    @CheckForNull
+    @Restricted(ProtectedExternally.class)
     protected abstract Computer createComputer();
 
     /**
@@ -271,7 +282,7 @@ public abstract class Node extends AbstractModelObject implements Reconfigurable
      * Return the possibly empty tag cloud for the labels of this node.
      */
     public TagCloud<LabelAtom> getLabelCloud() {
-        return new TagCloud<LabelAtom>(getAssignedLabels(),new WeightFunction<LabelAtom>() {
+        return new TagCloud<>(getAssignedLabels(), new WeightFunction<LabelAtom>() {
             public float weight(LabelAtom item) {
                 return item.getTiedJobCount();
             }
@@ -302,7 +313,7 @@ public abstract class Node extends AbstractModelObject implements Reconfigurable
      * @return HashSet<Label>.
      */
     private HashSet<LabelAtom> getDynamicLabels() {
-        HashSet<LabelAtom> result = new HashSet<LabelAtom>();
+        HashSet<LabelAtom> result = new HashSet<>();
         for (LabelFinder labeler : LabelFinder.all()) {
             // Filter out any bad(null) results from plugins
             // for compatibility reasons, findLabels may return LabelExpression and not atom.
@@ -337,6 +348,7 @@ public abstract class Node extends AbstractModelObject implements Reconfigurable
     /**
      * Gets the special label that represents this node itself.
      */
+    @NonNull
     @WithBridgeMethods(Label.class)
     public LabelAtom getSelfLabel() {
         return LabelAtom.get(getNodeName());
@@ -372,34 +384,42 @@ public abstract class Node extends AbstractModelObject implements Reconfigurable
     public CauseOfBlockage canTake(Queue.BuildableItem item) {
         Label l = item.getAssignedLabel();
         if(l!=null && !l.contains(this))
-            return CauseOfBlockage.fromMessage(Messages._Node_LabelMissing(getNodeName(),l));   // the task needs to be executed on label that this node doesn't have.
+            return CauseOfBlockage.fromMessage(Messages._Node_LabelMissing(getDisplayName(), l));   // the task needs to be executed on label that this node doesn't have.
 
         if(l==null && getMode()== Mode.EXCLUSIVE) {
             // flyweight tasks need to get executed somewhere, if every node
             if (!(item.task instanceof Queue.FlyweightTask && (
                     this instanceof Jenkins
-                            || Jenkins.getInstance().getNumExecutors() < 1
-                            || Jenkins.getInstance().getMode() == Mode.EXCLUSIVE)
+                            // TODO Why is the next operator a '||' instead of a '&&'?
+                            || Jenkins.get().getNumExecutors() < 1
+                            || Jenkins.get().getMode() == Mode.EXCLUSIVE)
             )) {
-                return CauseOfBlockage.fromMessage(Messages._Node_BecauseNodeIsReserved(getNodeName()));   // this node is reserved for tasks that are tied to it
+                return CauseOfBlockage.fromMessage(Messages._Node_BecauseNodeIsReserved(getDisplayName()));   // this node is reserved for tasks that are tied to it
             }
         }
 
         Authentication identity = item.authenticate();
-        if (!getACL().hasPermission(identity,Computer.BUILD)) {
+        if (!(SKIP_BUILD_CHECK_ON_FLYWEIGHTS && item.task instanceof Queue.FlyweightTask) && !hasPermission(identity, Computer.BUILD)) {
             // doesn't have a permission
-            return CauseOfBlockage.fromMessage(Messages._Node_LackingBuildPermission(identity.getName(),getNodeName()));
+            return CauseOfBlockage.fromMessage(Messages._Node_LackingBuildPermission(identity.getName(), getDisplayName()));
         }
 
         // Check each NodeProperty to see whether they object to this node
         // taking the task
         for (NodeProperty prop: getNodeProperties()) {
-            CauseOfBlockage c = prop.canTake(item);
+            CauseOfBlockage c;
+            try {
+                c = prop.canTake(item);
+            } catch (Throwable t) {
+                // We cannot guarantee the task can be taken by this node because something wrong happened
+                LOGGER.log(Level.WARNING, t, () -> String.format("Exception evaluating if the node '%s' can take the task '%s'", getNodeName(), item.task.getName()));
+                c = CauseOfBlockage.fromMessage(Messages._Queue_ExceptionCanTake());
+            }
             if (c!=null)    return c;
         }
 
         if (!isAcceptingTasks()) {
-            return CauseOfBlockage.fromMessage(Messages._Node_BecauseNodeIsNotAcceptingTasks(getNodeName()));
+            return new CauseOfBlockage.BecauseNodeIsNotAcceptingTasks(this);
         }
 
         // Looks like we can take the task
@@ -449,7 +469,48 @@ public abstract class Node extends AbstractModelObject implements Reconfigurable
     /**
      * Gets the {@link NodeProperty} instances configured for this {@link Node}.
      */
-    public abstract @Nonnull DescribableList<NodeProperty<?>, NodePropertyDescriptor> getNodeProperties();
+    public abstract @NonNull DescribableList<NodeProperty<?>, NodePropertyDescriptor> getNodeProperties();
+
+    /**
+     * Gets the specified property or null if the property is not configured for this Node.
+     * 
+     * @param clazz the type of the property
+     * 
+     * @return null if the property is not configured
+     * 
+     * @since 2.37
+     */
+    @CheckForNull
+    public <T extends NodeProperty> T getNodeProperty(Class<T> clazz)
+    {
+        for (NodeProperty p: getNodeProperties()) {
+            if (clazz.isInstance(p)) {
+                return clazz.cast(p);
+            }
+        }
+        return null;      
+    }
+
+    /**
+     * Gets the property from the given classname or null if the property 
+     * is not configured for this Node.
+     * 
+     * @param className The classname of the property
+     * 
+     * @return null if the property is not configured
+     * 
+     * @since 2.37
+     */
+    @CheckForNull
+    public NodeProperty getNodeProperty(String className)
+    {
+        for (NodeProperty p: getNodeProperties()) {
+            if (p.getClass().getName().equals(className)) {
+                return p;
+            }
+        }
+        return null;      
+    }
 
     // used in the Jelly script to expose descriptors
     public List<NodePropertyDescriptor> getNodePropertyDescriptors() {
@@ -457,15 +518,7 @@ public abstract class Node extends AbstractModelObject implements Reconfigurable
     }
 
     public ACL getACL() {
-        return Jenkins.getInstance().getAuthorizationStrategy().getACL(this);
-    }
-
-    public final void checkPermission(Permission permission) {
-        getACL().checkPermission(permission);
-    }
-
-    public final boolean hasPermission(Permission permission) {
-        return getACL().hasPermission(permission);
+        return Jenkins.get().getAuthorizationStrategy().getACL(this);
     }
 
     public Node reconfigure(final StaplerRequest req, JSONObject form) throws FormException {
@@ -481,7 +534,7 @@ public abstract class Node extends AbstractModelObject implements Reconfigurable
                 }
 
                 try {
-                    DescribableList<NodeProperty<?>, NodePropertyDescriptor> tmp = new DescribableList<NodeProperty<?>, NodePropertyDescriptor>(Saveable.NOOP,getNodeProperties().toList());
+                    DescribableList<NodeProperty<?>, NodePropertyDescriptor> tmp = new DescribableList<>(Saveable.NOOP, getNodeProperties().toList());
                     tmp.rebuild(req, jsonForProperties, NodeProperty.all());
                     return tmp.toList();
                 } catch (FormException e) {

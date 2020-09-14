@@ -32,34 +32,61 @@ import hudson.matrix.AxisList;
 import hudson.matrix.MatrixProject;
 import hudson.matrix.TextAxis;
 import hudson.security.ACL;
+import hudson.security.ACLContext;
 import hudson.security.AuthorizationStrategy;
 import hudson.security.Permission;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
+
+import hudson.views.ViewJobFilter;
+import jenkins.model.Jenkins;
 import org.acegisecurity.Authentication;
 
-import static org.junit.Assert.*;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.containsInAnyOrder;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+import javax.servlet.ReadListener;
+import javax.servlet.ServletInputStream;
+
+import org.apache.commons.io.IOUtils;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.TestName;
 import org.jvnet.hudson.test.Issue;
 import org.jvnet.hudson.test.JenkinsRule;
 import org.jvnet.hudson.test.JenkinsRule.WebClient;
 import org.jvnet.hudson.test.MockFolder;
 import org.jvnet.hudson.test.recipes.LocalData;
+import org.kohsuke.stapler.StaplerRequest;
+import org.kohsuke.stapler.StaplerResponse;
 import org.xml.sax.SAXException;
 
 public class ListViewTest {
 
     @Rule public JenkinsRule j = new JenkinsRule();
 
+    @Rule public TestName testName = new TestName();
+
     @Issue("JENKINS-15309")
     @LocalData
-    @Test public void nullJobNames() throws Exception {
+    @Test public void nullJobNames() {
         assertTrue(j.jenkins.getView("v").getItems().isEmpty());
     }
     
@@ -133,15 +160,15 @@ public class ListViewTest {
         v.add(p1);
         v.add(p2);
         v.add(p3);
-        assertEquals(new HashSet<TopLevelItem>(Arrays.asList(p1, p2, p3)), new HashSet<TopLevelItem>(v.getItems()));
+        assertEquals(new HashSet<TopLevelItem>(Arrays.asList(p1, p2, p3)), new HashSet<>(v.getItems()));
         sub.renameTo("lower");
         MockFolder stuff = top.createProject(MockFolder.class, "stuff");
         Items.move(p1, stuff);
         p3.delete();
         top.createProject(FreeStyleProject.class, "p3");
-        assertEquals(new HashSet<TopLevelItem>(Arrays.asList(p1, p2)), new HashSet<TopLevelItem>(v.getItems()));
+        assertEquals(new HashSet<TopLevelItem>(Arrays.asList(p1, p2)), new HashSet<>(v.getItems()));
         top.renameTo("upper");
-        assertEquals(new HashSet<TopLevelItem>(Arrays.asList(p1, p2)), new HashSet<TopLevelItem>(v.getItems()));
+        assertEquals(new HashSet<TopLevelItem>(Arrays.asList(p1, p2)), new HashSet<>(v.getItems()));
     }
 
     @Issue("JENKINS-23893")
@@ -219,17 +246,118 @@ public class ListViewTest {
         ListView v = new ListView("v", j.jenkins);
         v.add(p);
         j.jenkins.addView(v);
-        ACL.impersonate(User.get("alice").impersonate(), new Runnable() {
-            @Override public void run() {
-                try {
-                    p.renameTo("p2");
-                } catch (IOException x) {
-                    throw new RuntimeException(x);
-                }
-            }
-        });
+        try (ACLContext acl = ACL.as(User.get("alice"))) {
+            p.renameTo("p2");
+        }
         assertEquals(Collections.singletonList(p), v.getItems());
     }
+
+    @Issue("JENKINS-41128")
+    @Test public void addJobUsingAPI() throws Exception {
+        ListView v = new ListView("view", j.jenkins);
+        j.jenkins.addView(v);
+        StaplerRequest req = mock(StaplerRequest.class);
+        StaplerResponse rsp = mock(StaplerResponse.class);
+
+        String configXml = IOUtils.toString(getClass().getResourceAsStream(String.format("%s/%s/config.xml", getClass().getSimpleName(), testName.getMethodName())), StandardCharsets.UTF_8);
+
+        when(req.getMethod()).thenReturn("POST");
+        when(req.getParameter("name")).thenReturn("job1");
+        when(req.getInputStream()).thenReturn(new Stream(IOUtils.toInputStream(configXml)));
+        when(req.getContentType()).thenReturn("application/xml");
+        v.doCreateItem(req, rsp);
+        List<TopLevelItem> items = v.getItems();
+        assertEquals(1, items.size());
+        assertEquals("job1", items.get(0).getName());
+    }
+
+    @Issue("JENKINS-23411")
+    @Test public void doRemoveJobFromViewNullItem() throws Exception {
+        MockFolder folder = j.createFolder("folder");
+        ListView view = new ListView("view", folder);
+        folder.addView(view);
+        FreeStyleProject job = folder.createProject(FreeStyleProject.class, "job1");
+        view.add(job);
+
+        List<TopLevelItem> items = view.getItems();
+        assertEquals(1, items.size());
+        assertEquals("job1", items.get(0).getName());
+
+        // remove a contained job
+        view.doRemoveJobFromView("job1");
+        List<TopLevelItem> itemsNow = view.getItems();
+        assertEquals(0, itemsNow.size());
+
+        // remove a not contained job
+        try {
+            view.doRemoveJobFromView("job2");
+            fail("Remove job2");
+        } catch(Failure e) {
+            assertEquals(e.getMessage(), "Query parameter 'name' does not correspond to a known and readable item");
+        }
+    }
+
+    @Test public void getItemsNames() throws Exception {
+        MockFolder f1 = j.createFolder("f1");
+        MockFolder f2 = j.createFolder("f2");
+        FreeStyleProject p1 = j.createFreeStyleProject("p1");
+        FreeStyleProject p2 = j.createFreeStyleProject("p2");
+        FreeStyleProject p3 = f1.createProject(FreeStyleProject.class, "p3");
+        FreeStyleProject p4 = f2.createProject(FreeStyleProject.class, "p4");
+        ListView lv = new ListView("view", Jenkins.get());
+        lv.setRecurse(false);
+        Set<String> names = new TreeSet<>();
+        names.add("p1");
+        names.add("p2");
+        names.add("f1/p3");
+        names.add("f2/p4");
+        lv.setJobNames(names);
+        assertThat(lv.getItems(), containsInAnyOrder(p1,p2));
+        lv.setRecurse(true);
+        assertThat(lv.getItems(), containsInAnyOrder(p1, p2, p3, p4));
+    }
+
+    @Test public void getItemsRegex() throws Exception {
+        MockFolder f1 = j.createFolder("f1");
+        MockFolder f2 = j.createFolder("f2");
+        FreeStyleProject p1 = j.createFreeStyleProject("p1");
+        FreeStyleProject p2 = j.createFreeStyleProject("p2");
+        FreeStyleProject p3 = f1.createProject(FreeStyleProject.class, "p3");
+        FreeStyleProject p4 = f2.createProject(FreeStyleProject.class, "p4");
+        ListView lv = new ListView("view", Jenkins.get());
+        lv.setRecurse(false);
+        lv.setIncludeRegex("p.*");
+        assertThat(lv.getItems(), containsInAnyOrder(p1, p2));
+        lv.setRecurse(true);
+        assertThat(lv.getItems(), containsInAnyOrder(p1, p2));
+        lv.setIncludeRegex("f.*");
+        assertThat(lv.getItems(), containsInAnyOrder(p3, p4, f1, f2));
+        lv.setRecurse(false);
+        assertThat(lv.getItems(), containsInAnyOrder(f1, f2));
+    }
+
+    @Test public void withJobViewFilter() throws Exception {
+        MockFolder f1 = j.createFolder("f1");
+        MockFolder f2 = j.createFolder("f2");
+        FreeStyleProject p1 = j.createFreeStyleProject("p1");
+        FreeStyleProject p2 = j.createFreeStyleProject("p2");
+        FreeStyleProject p3 = f1.createProject(FreeStyleProject.class, "p3");
+        FreeStyleProject p4 = f2.createProject(FreeStyleProject.class, "p4");
+        ListView lv = new ListView("view", Jenkins.get());
+        lv.setJobFilters(Collections.singletonList(new AllFilter()));
+        lv.setRecurse(false);
+        assertThat(lv.getItems(), containsInAnyOrder(f1, f2, p1, p2));
+        lv.setRecurse(true);
+        assertThat(lv.getItems(), containsInAnyOrder(f1, f2, p1, p2, p3, p4));
+    }
+
+    private static final class AllFilter extends ViewJobFilter {
+        @Override
+        public List<TopLevelItem> filter(List<TopLevelItem> added, List<TopLevelItem> all, View filteringView) {
+            return new ArrayList<>(all);
+        }
+    }
+
     private static class AllButViewsAuthorizationStrategy extends AuthorizationStrategy {
         @Override public ACL getRootACL() {
             return UNSECURED.getRootACL();
@@ -243,6 +371,31 @@ public class ListViewTest {
                     return a.equals(SYSTEM);
                 }
             };
+        }
+    }
+
+    private static class Stream extends ServletInputStream {
+        private final InputStream inner;
+
+        public Stream(final InputStream inner) {
+            this.inner = inner;
+        }
+
+        @Override
+        public int read() throws IOException {
+            return inner.read();
+        }
+        @Override
+        public boolean isFinished() {
+            throw new UnsupportedOperationException();
+        }
+        @Override
+        public boolean isReady() {
+            throw new UnsupportedOperationException();
+        }
+        @Override
+        public void setReadListener(ReadListener readListener) {
+            throw new UnsupportedOperationException();
         }
     }
 

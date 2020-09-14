@@ -26,7 +26,6 @@ package hudson.cli;
 
 import hudson.Extension;
 import jenkins.model.Jenkins;
-import org.acegisecurity.AccessDeniedException;
 
 import java.util.logging.Logger;
 
@@ -34,7 +33,7 @@ import java.util.logging.Logger;
  * Clears the build queue
  *
  * @author pjanouse
- * @since TODO
+ * @since 1.654
  */
 @Extension
 public class ClearQueueCommand extends CLICommand {
@@ -48,7 +47,7 @@ public class ClearQueueCommand extends CLICommand {
 
     @Override
     protected int run() throws Exception {
-        Jenkins.getActiveInstance().getQueue().clear();
+        Jenkins.get().getQueue().clear();
         return 0;
     }
 

@@ -23,6 +23,7 @@
  */
 package hudson;
 
+import hudson.tasks.UserNameResolver;
 import jenkins.model.Jenkins;
 import hudson.util.CopyOnWriteList;
 
@@ -57,7 +58,7 @@ public class ExtensionListView {
     public static <T> List<T> createList(final Class<T> type) {
         return new AbstractList<T>() {
             private ExtensionList<T> storage() {
-                return Jenkins.getInstance().getExtensionList(type);
+                return Jenkins.get().getExtensionList(type);
             }
 
             @Override
@@ -102,7 +103,7 @@ public class ExtensionListView {
     public static <T> CopyOnWriteList<T> createCopyOnWriteList(final Class<T> type) {
         return new CopyOnWriteList<T>() {
             private ExtensionList<T> storage() {
-                return Jenkins.getInstance().getExtensionList(type);
+                return Jenkins.get().getExtensionList(type);
             }
 
             @Override

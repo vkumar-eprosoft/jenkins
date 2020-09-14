@@ -39,7 +39,7 @@ import org.kohsuke.args4j.spi.OptionHandler;
 import org.kohsuke.args4j.spi.Parameters;
 import org.kohsuke.args4j.spi.Setter;
 
-import javax.annotation.CheckForNull;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
 
 /**
  * Refers to {@link View} by its name.
@@ -48,7 +48,7 @@ import javax.annotation.CheckForNull;
  * For example:
  * <dl>
  *   <dt>my_view_name</dt><dd>refers to a top level view with given name.</dd>
- *   <dt>nested/inner</dt><dd>refers to a view named <tt>inner</tt> inside of a top level view group named <tt>nested</tt>.</dd>
+ *   <dt>nested/inner</dt><dd>refers to a view named {@code inner} inside of a top level view group named {@code nested}.</dd>
  * </dl>
  *
  * <p>
@@ -88,13 +88,13 @@ public class ViewOptionHandler extends OptionHandler<View> {
      * @throws IllegalStateException
      *      If cannot get active Jenkins instance or view can't contain a views
      * @throws AccessDeniedException
-     *      If user doens't have a READ permission for the view
-     * @since TODO
+     *      If user doesn't have a READ permission for the view
+     * @since 1.618
      */
     @CheckForNull
     public View getView(final String name) {
 
-        ViewGroup group = Jenkins.getActiveInstance();
+        ViewGroup group = Jenkins.get();
         View view = null;
 
         final StringTokenizer tok = new StringTokenizer(name, "/");
@@ -103,12 +103,13 @@ public class ViewOptionHandler extends OptionHandler<View> {
             String viewName = tok.nextToken();
 
             view = group.getView(viewName);
-            if (view == null)
+            if (view == null) {
+                group.checkPermission(View.READ);
                 throw new IllegalArgumentException(String.format(
                         "No view named %s inside view %s",
                         viewName, group.getDisplayName()
                 ));
-
+            }
             view.checkPermission(View.READ);
             if (view instanceof ViewGroup) {
                 group = (ViewGroup) view;

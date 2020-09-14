@@ -24,10 +24,8 @@
 package jenkins.install;
 
 import com.gargoylesoftware.htmlunit.Page;
-import com.gargoylesoftware.htmlunit.html.HtmlPage;
 import hudson.FilePath;
 import hudson.model.UpdateSite;
-import hudson.security.ACL;
 import hudson.security.AuthorizationStrategy;
 import hudson.security.SecurityRealm;
 import java.io.ByteArrayOutputStream;
@@ -35,24 +33,22 @@ import java.io.File;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import org.apache.commons.io.FileUtils;
-import org.apache.http.auth.AuthScope;
-import org.apache.http.auth.Credentials;
-import org.apache.http.auth.UsernamePasswordCredentials;
-import org.apache.http.impl.client.BasicCredentialsProvider;
 import static org.hamcrest.Matchers.*;
-import static org.junit.Assert.assertThat;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.experimental.categories.Category;
 import org.jvnet.hudson.test.JenkinsRule;
-import static org.junit.Assert.assertThat;
+import static org.hamcrest.MatcherAssert.assertThat;
 import org.junit.rules.TemporaryFolder;
 import org.jvnet.hudson.test.Issue;
+import org.jvnet.hudson.test.SmokeTest;
 
 /**
  * Tests of {@link SetupWizard}.
  * @author Oleg Nenashev
  */
+@Category(SmokeTest.class)
 public class SetupWizardTest {
     
     @Rule
@@ -60,8 +56,6 @@ public class SetupWizardTest {
     
     @Rule
     public TemporaryFolder tmpdir = new TemporaryFolder();
-    
-    BasicCredentialsProvider adminCredentialsProvider;
     
     @Before 
     public void initSetupWizard() throws IOException, InterruptedException {
@@ -73,13 +67,6 @@ public class SetupWizardTest {
         ByteArrayOutputStream ostream = new ByteArrayOutputStream();
         adminPassFile.copyTo(ostream);
         final String password = ostream.toString();
-        
-        adminCredentialsProvider = new BasicCredentialsProvider() {
-            @Override
-            public Credentials getCredentials(AuthScope authscope) {
-                return new UsernamePasswordCredentials("admin", password);
-            }
-        };
     }
     
     @Test
@@ -100,7 +87,7 @@ public class SetupWizardTest {
     @Issue("JENKINS-34833")
     public void shouldReturnUpdateSiteJSONIfSpecified() throws Exception {
         // Init the update site
-        CustomUpdateSite us = new CustomUpdateSite(tmpdir);
+        CustomUpdateSite us = new CustomUpdateSite(tmpdir.getRoot());
         us.init();
         j.jenkins.getUpdateCenter().getSites().add(us);
         
@@ -123,10 +110,10 @@ public class SetupWizardTest {
     public void shouldProhibitAccessToPluginListWithoutAuth() throws Exception {
         JenkinsRule.WebClient wc = j.createWebClient();
         wc.assertFails("setupWizard/platformPluginList", 403);
-        wc.assertFails("setupWizard/createAdminUaser", 403);
+        wc.assertFails("setupWizard/createAdminUser", 403);
         wc.assertFails("setupWizard/completeInstall", 403);
     }
-    
+
     private String jsonRequest(JenkinsRule.WebClient wc, String path) throws Exception {
         // Try to call the actions method to retrieve the data
         final Page res;
@@ -142,15 +129,15 @@ public class SetupWizardTest {
     
     private static final class CustomUpdateSite extends UpdateSite {
         
-        private final TemporaryFolder tmpdir;
+        private final File tmpdir;
         
-        public CustomUpdateSite(TemporaryFolder tmpdir) throws MalformedURLException {
-            super("custom-uc", tmpdir.getRoot().toURI().toURL().toString() + "update-center.json");
+        CustomUpdateSite(File tmpdir) throws MalformedURLException {
+            super("custom-uc", tmpdir.toURI().toURL().toString() + "update-center.json");
             this.tmpdir = tmpdir;
         }
 
         public void init() throws IOException {
-            File newFile = tmpdir.newFile("platform-plugins.json");
+            File newFile = new File(tmpdir, "platform-plugins.json");
             FileUtils.write(newFile, "[ { "
                     + "\"category\":\"Organization and Administration\", "
                     + "\"plugins\": [ { \"name\": \"dashboard-view\"}, { \"name\": \"antisamy-markup-formatter\" } ]"

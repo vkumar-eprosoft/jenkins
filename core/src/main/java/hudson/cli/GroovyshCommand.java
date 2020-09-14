@@ -25,7 +25,6 @@ package hudson.cli;
 
 import hudson.Extension;
 import jenkins.model.Jenkins;
-import hudson.remoting.ChannelClosedException;
 import groovy.lang.Binding;
 import groovy.lang.Closure;
 import org.codehaus.groovy.tools.shell.Groovysh;
@@ -56,12 +55,12 @@ public class GroovyshCommand extends CLICommand {
         return Messages.GroovyshCommand_ShortDescription();
     }
 
-    @Argument(metaVar="ARGS") public List<String> args = new ArrayList<String>();
+    @Argument(metaVar="ARGS") public List<String> args = new ArrayList<>();
 
     @Override
     protected int run() {
         // this allows the caller to manipulate the JVM state, so require the admin privilege.
-        Jenkins.getActiveInstance().checkPermission(Jenkins.RUN_SCRIPTS);
+        Jenkins.get().checkPermission(Jenkins.ADMINISTER);
 
         // this being remote means no jline capability is available
         System.setProperty("jline.terminal", UnsupportedTerminal.class.getName());
@@ -79,24 +78,24 @@ public class GroovyshCommand extends CLICommand {
         return shell.run(commandLine.toString());
     }
 
-    @SuppressWarnings({"unchecked","rawtypes"})
+    @SuppressWarnings({"rawtypes"})
     protected Groovysh createShell(InputStream stdin, PrintStream stdout,
         PrintStream stderr) {
 
         Binding binding = new Binding();
         // redirect "println" to the CLI
         binding.setProperty("out", new PrintWriter(stdout,true));
-        binding.setProperty("hudson", Jenkins.getActiveInstance()); // backward compatibility
-        binding.setProperty("jenkins", Jenkins.getActiveInstance());
+        binding.setProperty("hudson", Jenkins.get()); // backward compatibility
+        binding.setProperty("jenkins", Jenkins.get());
 
         IO io = new IO(new BufferedInputStream(stdin),stdout,stderr);
 
-        final ClassLoader cl = Jenkins.getActiveInstance().pluginManager.uberClassLoader;
+        final ClassLoader cl = Jenkins.get().pluginManager.uberClassLoader;
         Closure registrar = new Closure(null, null) {
             private static final long serialVersionUID = 1L;
 
             @SuppressWarnings("unused")
-            @edu.umd.cs.findbugs.annotations.SuppressWarnings(value="UMAC_UNCALLABLE_METHOD_OF_ANONYMOUS_CLASS",justification="Closure invokes this via reflection")
+            @edu.umd.cs.findbugs.annotations.SuppressFBWarnings(value="UMAC_UNCALLABLE_METHOD_OF_ANONYMOUS_CLASS",justification="Closure invokes this via reflection")
             public Object doCall(Object[] args) {
                 assert(args.length == 1);
                 assert(args[0] instanceof Shell);
@@ -110,25 +109,6 @@ public class GroovyshCommand extends CLICommand {
         };
         Groovysh shell = new Groovysh(cl, binding, io, registrar);
         shell.getImports().add("hudson.model.*");
-
-        // defaultErrorHook doesn't re-throw IOException, so ShellRunner in
-        // Groovysh will keep looping forever if we don't terminate when the
-        // channel is closed
-        final Closure originalErrorHook = shell.getErrorHook();
-        shell.setErrorHook(new Closure(shell, shell) {
-            private static final long serialVersionUID = 1L;
-
-            @SuppressWarnings("unused")
-            @edu.umd.cs.findbugs.annotations.SuppressWarnings(value="UMAC_UNCALLABLE_METHOD_OF_ANONYMOUS_CLASS",justification="Closure invokes this via reflection")
-            public Object doCall(Object[] args) throws ChannelClosedException {
-                if (args.length == 1 && args[0] instanceof ChannelClosedException) {
-                    throw (ChannelClosedException)args[0];
-                }
-
-                return originalErrorHook.call(args);
-            }
-        });
-
         return shell;
     }
 

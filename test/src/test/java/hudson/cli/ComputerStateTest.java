@@ -23,7 +23,8 @@
  */
 package hudson.cli;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 import static hudson.cli.CLICommandInvoker.Matcher.*;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
@@ -168,6 +169,6 @@ public class ComputerStateTest {
         try {
             page.getAnchorByText(text);
             fail(text + " link should not exist");
-        } catch (ElementNotFoundException _) { /*expected*/ }
+        } catch (ElementNotFoundException ex) { /*expected*/ }
     }
 }

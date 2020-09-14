@@ -31,7 +31,8 @@ import java.util.AbstractCollection;
 import java.util.Iterator;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CopyOnWriteArraySet;
-import javax.annotation.Nonnull;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import jenkins.security.NotReallyRoleSensitiveCallable;
 
 /**
  * Controls mutual exclusion of {@link ResourceList}.
@@ -41,7 +42,7 @@ public class ResourceController {
     /**
      * {@link ResourceList}s that are used by activities that are in progress.
      */
-    private final Set<ResourceActivity> inProgress = new CopyOnWriteArraySet<ResourceActivity>();
+    private final Set<ResourceActivity> inProgress = new CopyOnWriteArraySet<>();
 
     /**
      * View of {@link #inProgress} that exposes its {@link ResourceList}.
@@ -75,22 +76,20 @@ public class ResourceController {
      * @throws InterruptedException
      *      the thread can be interrupted while waiting for the available resources.
      */
-    public void execute(@Nonnull Runnable task, final ResourceActivity activity ) throws InterruptedException {
+    public void execute(@NonNull Runnable task, final ResourceActivity activity ) throws InterruptedException {
         final ResourceList resources = activity.getResourceList();
-        _withLock(new Runnable() {
+        _withLock(new NotReallyRoleSensitiveCallable<Void,InterruptedException>() {
             @Override
-            public void run() {
-                while(inUse.isCollidingWith(resources))
-                    try {
-                        // TODO revalidate the resource list after re-acquiring lock, for now we just let the build fail
-                        _await();
-                    } catch (InterruptedException e) {
-                        throw new RuntimeException(e);
-                    }
+            public Void call() throws InterruptedException {
+                while (inUse.isCollidingWith(resources)) {
+                    // TODO revalidate the resource list after re-acquiring lock, for now we just let the build fail
+                    _await();
+                }
 
                 // we have a go
                 inProgress.add(activity);
-                inUse = ResourceList.union(inUse,resources);
+                inUse = ResourceList.union(inUse, resources);
+                return null;
             }
         });
 
@@ -180,6 +179,12 @@ public class ResourceController {
     }
 
     protected <V> V _withLock(java.util.concurrent.Callable<V> callable) throws Exception {
+        synchronized (this) {
+            return callable.call();
+        }
+    }
+
+    protected <V, T extends Throwable> V _withLock(hudson.remoting.Callable<V,T> callable) throws T {
         synchronized (this) {
             return callable.call();
         }

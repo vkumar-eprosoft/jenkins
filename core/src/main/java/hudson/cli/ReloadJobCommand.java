@@ -26,9 +26,9 @@ package hudson.cli;
 import hudson.AbortException;
 import hudson.Extension;
 import hudson.model.AbstractItem;
-import hudson.model.AbstractProject;
 import hudson.model.Item;
 
+import hudson.model.Items;
 import jenkins.model.Jenkins;
 import org.kohsuke.args4j.Argument;
 
@@ -38,8 +38,9 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
+ * Reloads job from the disk.
  * @author pjanouse
- * @since TODO
+ * @since 1.633
  */
 @Extension
 public class ReloadJobCommand extends CLICommand {
@@ -59,16 +60,14 @@ public class ReloadJobCommand extends CLICommand {
     protected int run() throws Exception {
 
         boolean errorOccurred = false;
-        final Jenkins jenkins = Jenkins.getActiveInstance();
+        final Jenkins jenkins = Jenkins.get();
 
-        final HashSet<String> hs = new HashSet<String>();
-        hs.addAll(jobs);
+        final HashSet<String> hs = new HashSet<>(jobs);
 
         for (String job_s: hs) {
             AbstractItem job = null;
 
             try {
-                // TODO: JENKINS-30786
                 Item item = jenkins.getItemByFullName(job_s);
                 if (item instanceof AbstractItem) {
                     job = (AbstractItem) item;
@@ -77,11 +76,10 @@ public class ReloadJobCommand extends CLICommand {
                 }
 
                 if(job == null) {
-                    // TODO: JENKINS-30785
-                    AbstractProject project = AbstractProject.findNearest(job_s);
+                    AbstractItem project = Items.findNearest(AbstractItem.class, job_s, jenkins);
                     throw new IllegalArgumentException(project == null ?
-                        "No such job \u2018" + job_s + "\u2019 exists." :
-                        String.format("No such job \u2018%s\u2019 exists. Perhaps you meant \u2018%s\u2019?",
+                        "No such item \u2018" + job_s + "\u2019 exists." :
+                        String.format("No such item \u2018%s\u2019 exists. Perhaps you meant \u2018%s\u2019?",
                                 job_s, project.getFullName()));
                 }
 
@@ -92,7 +90,7 @@ public class ReloadJobCommand extends CLICommand {
                     throw e;
                 }
 
-                final String errorMsg = String.format(job_s + ": " + e.getMessage());
+                final String errorMsg = job_s + ": " + e.getMessage();
                 stderr.println(errorMsg);
                 errorOccurred = true;
                 continue;
@@ -100,7 +98,7 @@ public class ReloadJobCommand extends CLICommand {
         }
 
         if (errorOccurred) {
-            throw new AbortException("Error occured while performing this command, see previous stderr output.");
+            throw new AbortException(CLI_LISTPARAM_SUMMARY_ERROR_TEXT);
         }
         return 0;
     }

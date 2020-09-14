@@ -25,49 +25,45 @@ package hudson;
 
 import hudson.FilePath.TarCompression;
 import hudson.model.TaskListener;
+import hudson.os.PosixAPI;
+import hudson.os.WindowsUtil;
 import hudson.remoting.VirtualChannel;
+import hudson.slaves.WorkspaceList;
 import hudson.util.NullStream;
 import hudson.util.StreamTaskListener;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.io.RandomAccessFile;
-import java.net.ConnectException;
-import java.net.HttpURLConnection;
-import java.net.MalformedURLException;
-import java.net.URL;
-import java.net.URLConnection;
-import java.net.URLStreamHandler;
-import java.net.URLStreamHandlerFactory;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.output.NullOutputStream;
 import org.apache.tools.ant.Project;
 import org.apache.tools.ant.taskdefs.Chmod;
-import static org.junit.Assert.*;
-import static org.junit.Assume.assumeTrue;
-import static org.junit.Assume.assumeFalse;
 import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
-
 import org.jvnet.hudson.test.Issue;
 import org.mockito.Mockito;
+
+import java.io.*;
+import java.net.*;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.PosixFilePermission;
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
+
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+import static org.junit.Assume.assumeFalse;
+import static org.junit.Assume.assumeTrue;
 import static org.mockito.Mockito.*;
 
 /**
@@ -134,16 +130,16 @@ public class FilePathTest {
     }
 
     private void givenSomeContentInFile(File file, int size) throws IOException {
-        FileOutputStream os = new FileOutputStream(file);
-        byte[] buf = new byte[size];
-        for (int i=0; i<buf.length; i++)
-            buf[i] = (byte)(i%256);
-        os.write(buf);
-        os.close();
+        try (OutputStream os = Files.newOutputStream(file.toPath())) {
+            byte[] buf = new byte[size];
+            for (int i = 0; i < buf.length; i++)
+                buf[i] = (byte) (i % 256);
+            os.write(buf);
+        }
     }
     
     private List<Future<Integer>> whenFileIsCopied100TimesConcurrently(final File file) throws InterruptedException {
-        List<Callable<Integer>> r = new ArrayList<Callable<Integer>>();
+        List<Callable<Integer>> r = new ArrayList<>();
         for (int i=0; i<100; i++) {
             r.add(new Callable<Integer>() {
                 public Integer call() throws Exception {
@@ -219,13 +215,10 @@ public class FilePathTest {
             for (int i = 0; i < 10000; i++) {
                 // TODO is there a simpler way to force the TarOutputStream to be flushed and the reader to start?
                 // Have not found a way to make the failure guaranteed.
-                OutputStream os = from.child("content" + i).write();
-                try {
+                try (OutputStream os = from.child("content" + i).write()) {
                     for (int j = 0; j < 1024; j++) {
                         os.write('.');
                     }
-                } finally {
-                    os.close();
                 }
             }
             FilePath toF = to.child("content0");
@@ -241,7 +234,7 @@ public class FilePathTest {
                     throw x;
                 }
             } finally {
-                toF.chmod(700);
+                toF.chmod(0700);
             }
     }
 
@@ -307,7 +300,7 @@ public class FilePathTest {
     }
 
     @Issue("JENKINS-6494")
-    @Test public void getParent() throws Exception {
+    @Test public void getParent() {
         FilePath fp = new FilePath((VirtualChannel)null, "/abc/def");
         assertEquals("/abc", (fp = fp.getParent()).getRemote());
         assertEquals("/", (fp = fp.getParent()).getRemote());
@@ -369,7 +362,7 @@ public class FilePathTest {
 
         // Compress archive
         final FilePath tmpDirPath = new FilePath(tmpDir);
-        int tar = tmpDirPath.tar(new FileOutputStream(tarFile), tempFile.getName());
+        int tar = tmpDirPath.tar(Files.newOutputStream(tarFile.toPath()), tempFile.getName());
         assertEquals("One file should have been compressed", 1, tar);
 
         // Decompress
@@ -382,36 +375,36 @@ public class FilePathTest {
 
     @Test public void list() throws Exception {
         File baseDir = temp.getRoot();
-            final Set<FilePath> expected = new HashSet<FilePath>();
+            final Set<FilePath> expected = new HashSet<>();
             expected.add(createFilePath(baseDir, "top", "sub", "app.log"));
             expected.add(createFilePath(baseDir, "top", "sub", "trace.log"));
             expected.add(createFilePath(baseDir, "top", "db", "db.log"));
             expected.add(createFilePath(baseDir, "top", "db", "trace.log"));
             final FilePath[] result = new FilePath(baseDir).list("**");
-            assertEquals(expected, new HashSet<FilePath>(Arrays.asList(result)));
+            assertEquals(expected, new HashSet<>(Arrays.asList(result)));
     }
 
     @Test public void listWithExcludes() throws Exception {
         File baseDir = temp.getRoot();
-            final Set<FilePath> expected = new HashSet<FilePath>();
+            final Set<FilePath> expected = new HashSet<>();
             expected.add(createFilePath(baseDir, "top", "sub", "app.log"));
             createFilePath(baseDir, "top", "sub", "trace.log");
             expected.add(createFilePath(baseDir, "top", "db", "db.log"));
             createFilePath(baseDir, "top", "db", "trace.log");
             final FilePath[] result = new FilePath(baseDir).list("**", "**/trace.log");
-            assertEquals(expected, new HashSet<FilePath>(Arrays.asList(result)));
+            assertEquals(expected, new HashSet<>(Arrays.asList(result)));
     }
 
     @Test public void listWithDefaultExcludes() throws Exception {
         File baseDir = temp.getRoot();
-            final Set<FilePath> expected = new HashSet<FilePath>();
+            final Set<FilePath> expected = new HashSet<>();
             expected.add(createFilePath(baseDir, "top", "sub", "backup~"));
             expected.add(createFilePath(baseDir, "top", "CVS", "somefile,v"));
             expected.add(createFilePath(baseDir, "top", ".git", "config"));
             // none of the files are included by default (default includes true)
             assertEquals(0, new FilePath(baseDir).list("**", "").length);
             final FilePath[] result = new FilePath(baseDir).list("**", "", false);
-            assertEquals(expected, new HashSet<FilePath>(Arrays.asList(result)));
+            assertEquals(expected, new HashSet<>(Arrays.asList(result)));
     }
 
     @Issue("JENKINS-11073")
@@ -467,6 +460,25 @@ public class FilePathTest {
             }
     }
 
+    @Test public void copyToWithPermissionSpecialPermissions() throws IOException, InterruptedException {
+        assumeFalse("Test uses POSIX-specific features", Functions.isWindows());
+        File tmp = temp.getRoot();
+        File original = new File(tmp,"original");
+        FilePath originalP = new FilePath(channels.french, original.getPath());
+        originalP.touch(0);
+        PosixAPI.jnr().chmod(original.getAbsolutePath(), 02777); // Read/write/execute for everyone and setuid.
+
+        File sameChannelCopy = new File(tmp,"sameChannelCopy");
+        FilePath sameChannelCopyP = new FilePath(channels.french, sameChannelCopy.getPath());
+        originalP.copyToWithPermission(sameChannelCopyP);
+        assertEquals("Special permissions should be copied on the same machine", 02777, PosixAPI.jnr().stat(sameChannelCopy.getAbsolutePath()).mode() & 07777);
+
+        File diffChannelCopy = new File(tmp,"diffChannelCopy");
+        FilePath diffChannelCopyP = new FilePath(channels.british, diffChannelCopy.getPath());
+        originalP.copyToWithPermission(diffChannelCopyP);
+        assertEquals("Special permissions should not be copied across machines", 00777, PosixAPI.jnr().stat(diffChannelCopy.getAbsolutePath()).mode() & 07777);
+    }
+
     @Test public void symlinkInTar() throws Exception {
         assumeFalse("can't test on Windows", Functions.isWindows());
 
@@ -486,7 +498,7 @@ public class FilePathTest {
     }
 
     @Issue("JENKINS-13649")
-    @Test public void multiSegmentRelativePaths() throws Exception {
+    @Test public void multiSegmentRelativePaths() {
         VirtualChannel d = Mockito.mock(VirtualChannel.class);
         FilePath winPath = new FilePath(d, "c:\\app\\jenkins\\workspace");
         FilePath nixPath = new FilePath(d, "/opt/jenkins/workspace");
@@ -532,8 +544,8 @@ public class FilePathTest {
                 d3.mkdirs();
                 d3.child("f.txt").touch(0);
             }
-            assertEquals(null, d.validateAntFileMask("d1/d2/**/f.txt"));
-            assertEquals(null, d.validateAntFileMask("d1/d2/**/f.txt", 10));
+            assertNull(d.validateAntFileMask("d1/d2/**/f.txt"));
+            assertNull(d.validateAntFileMask("d1/d2/**/f.txt", 10));
             assertEquals(Messages.FilePath_validateAntFileMask_portionMatchButPreviousNotMatchAndSuggest("**/*.js", "**", "**/*.js"), d.validateAntFileMask("**/*.js", 1000));
             try {
                 d.validateAntFileMask("**/*.js", 10);
@@ -552,11 +564,11 @@ public class FilePathTest {
             d.child("d1/d2/d3/f.txt").touch(0);
             d.child("d1/d2/d3/f.html").touch(0);
             d.child("d1/d2/f.txt").touch(0);
-            
-            assertEquals(null, d.validateAntFileMask("**/d1/**/f.*", FilePath.VALIDATE_ANT_FILE_MASK_BOUND, true));
-            assertEquals(null, d.validateAntFileMask("**/d1/**/f.*", FilePath.VALIDATE_ANT_FILE_MASK_BOUND, false));
+
+            assertNull(d.validateAntFileMask("**/d1/**/f.*", FilePath.VALIDATE_ANT_FILE_MASK_BOUND, true));
+            assertNull(d.validateAntFileMask("**/d1/**/f.*", FilePath.VALIDATE_ANT_FILE_MASK_BOUND, false));
             assertEquals(Messages.FilePath_validateAntFileMask_matchWithCaseInsensitive("**/D1/**/F.*"), d.validateAntFileMask("**/D1/**/F.*", FilePath.VALIDATE_ANT_FILE_MASK_BOUND, true));
-            assertEquals(null, d.validateAntFileMask("**/D1/**/F.*", FilePath.VALIDATE_ANT_FILE_MASK_BOUND, false));
+            assertNull(d.validateAntFileMask("**/D1/**/F.*", FilePath.VALIDATE_ANT_FILE_MASK_BOUND, false));
         } finally {
             Util.deleteRecursive(tmp);
         }
@@ -598,7 +610,7 @@ public class FilePathTest {
             when(con.getResponseCode())
                 .thenReturn(HttpURLConnection.HTTP_NOT_MODIFIED);
 
-            assertFalse(d.installIfNecessaryFrom(url, null, null));
+            assertFalse(d.installIfNecessaryFrom(url, null, "message if failed"));
 
             verify(con).setIfModifiedSince(123000);
     }
@@ -617,7 +629,7 @@ public class FilePathTest {
             when(con.getInputStream())
               .thenReturn(someZippedContent());
 
-            assertTrue(d.installIfNecessaryFrom(url, null, null));
+            assertTrue(d.installIfNecessaryFrom(url, null, "message if failed"));
     }
 
     @Issue("JENKINS-26196")
@@ -656,9 +668,8 @@ public class FilePathTest {
         when(con2.getResponseCode()).thenReturn(HttpURLConnection.HTTP_OK);
         when(con2.getInputStream()).thenReturn(someZippedContent());
 
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
         String message = "going ahead";
-        assertTrue(d.installIfNecessaryFrom(url, new StreamTaskListener(baos), message));
+        assertTrue(d.installIfNecessaryFrom(url, null, message));
     }
 
     private URL someUrlToZipFile(final URLConnection con) throws IOException {
@@ -725,7 +736,7 @@ public class FilePathTest {
 
         // Compress archive
         final FilePath tmpDirPath = new FilePath(srcFolder);
-        int tarred = tmpDirPath.tar(new FileOutputStream(archive), "**");
+        int tarred = tmpDirPath.tar(Files.newOutputStream(archive.toPath()), "**");
         assertEquals("One file should have been compressed", 3, tarred);
 
         // Decompress
@@ -734,5 +745,404 @@ public class FilePathTest {
         FilePath outDir = new FilePath(dstFolder);
         // and now fail when flush is bad!
         tmpDirPath.child("../" + archive.getName()).untar(outDir, TarCompression.NONE);
+    }
+
+    @Test
+    public void chmod() throws Exception {
+        assumeFalse(Functions.isWindows());
+        File f = temp.newFile("file");
+        FilePath fp = new FilePath(f);
+        int prevMode = fp.mode();
+        assertEquals(0400, chmodAndMode(fp, 0400));
+        assertEquals(0412, chmodAndMode(fp, 0412));
+        assertEquals(0777, chmodAndMode(fp, 0777));
+        assertEquals(prevMode, chmodAndMode(fp, prevMode));
+    }
+
+    @Test
+    public void chmodInvalidPermissions() throws Exception {
+        assumeFalse(Functions.isWindows());
+        File f = temp.newFolder("folder");
+        FilePath fp = new FilePath(f);
+        int invalidMode = 01770; // Full permissions for owner and group plus sticky bit.
+        try {
+            chmodAndMode(fp, invalidMode);
+            fail("Setting sticky bit should fail");
+        } catch (IOException e) {
+            assertEquals("Invalid mode: " + invalidMode, e.getMessage());
+        }
+    }
+
+    private int chmodAndMode(FilePath path, int mode) throws Exception {
+        path.chmod(mode);
+        return path.mode();
+    }
+
+    @Issue("JENKINS-48227")
+    @Test
+    public void testCreateTempDir() throws IOException, InterruptedException  {
+        final File srcFolder = temp.newFolder("src");
+        final FilePath filePath = new FilePath(srcFolder);
+        FilePath x = filePath.createTempDir("jdk", "dmg");
+        FilePath y = filePath.createTempDir("jdk", "pkg");
+        FilePath z = filePath.createTempDir("jdk", null);
+
+        assertNotNull("FilePath x should not be null", x);
+        assertNotNull("FilePath y should not be null", y);
+        assertNotNull("FilePath z should not be null", z);
+
+        assertTrue(x.getName().contains("jdk.dmg"));
+        assertTrue(y.getName().contains("jdk.pkg"));
+        assertTrue(z.getName().contains("jdk.tmp"));
+    }
+
+    @Test public void deleteRecursiveOnUnix() throws Exception {
+        assumeFalse("Uses Unix-specific features", Functions.isWindows());
+        Path targetDir = temp.newFolder("target").toPath();
+        Path targetContents = Files.createFile(targetDir.resolve("contents.txt"));
+        Path toDelete = temp.newFolder("toDelete").toPath();
+        Util.createSymlink(toDelete.toFile(), "../targetDir", "link", TaskListener.NULL);
+        Files.createFile(toDelete.resolve("foo"));
+        Files.createFile(toDelete.resolve("bar"));
+        FilePath f = new FilePath(toDelete.toFile());
+        f.deleteRecursive();
+        assertTrue("symlink target should not be deleted", Files.exists(targetDir));
+        assertTrue("symlink target contents should not be deleted", Files.exists(targetContents));
+        assertFalse("could not delete target", Files.exists(toDelete));
+    }
+
+    @Test
+    @Issue("JENKINS-44909")
+    public void deleteSuffixesRecursive() throws Exception {
+        File deleteSuffixesRecursiveFolder = temp.newFolder("deleteSuffixesRecursive");
+        FilePath filePath = new FilePath(deleteSuffixesRecursiveFolder);
+        FilePath suffix = filePath.withSuffix(WorkspaceList.COMBINATOR + "suffixed");
+        FilePath textTempFile = suffix.createTextTempFile("tmp", null, "dummy", true);
+
+        assertThat(textTempFile.exists(), is(true));
+        
+        filePath.deleteSuffixesRecursive();
+        assertThat(textTempFile.exists(), is(false));
+    }
+
+    @Test public void deleteRecursiveOnWindows() throws Exception {
+        assumeTrue("Uses Windows-specific features", Functions.isWindows());
+        Path targetDir = temp.newFolder("targetDir").toPath();
+        Path targetContents = Files.createFile(targetDir.resolve("contents.txt"));
+        Path toDelete = temp.newFolder("toDelete").toPath();
+        File junction = WindowsUtil.createJunction(toDelete.resolve("junction").toFile(), targetDir.toFile());
+        Files.createFile(toDelete.resolve("foo"));
+        Files.createFile(toDelete.resolve("bar"));
+        FilePath f = new FilePath(toDelete.toFile());
+        f.deleteRecursive();
+        assertTrue("junction target should not be deleted", Files.exists(targetDir));
+        assertTrue("junction target contents should not be deleted", Files.exists(targetContents));
+        assertFalse("could not delete junction", junction.exists());
+        assertFalse("could not delete target", Files.exists(toDelete));
+    }
+
+    @Issue("JENKINS-13128")
+    @Test public void copyRecursivePreservesPosixFilePermissions() throws Exception {
+        assumeFalse("windows doesn't support posix file permissions", Functions.isWindows());
+        File src = temp.newFolder("src");
+        File dst = temp.newFolder("dst");
+        Path sourceFile = Files.createFile(src.toPath().resolve("test-file"));
+        Set<PosixFilePermission> allRWX = EnumSet.allOf(PosixFilePermission.class);
+        Files.setPosixFilePermissions(sourceFile, allRWX);
+        FilePath f = new FilePath(src);
+        f.copyRecursiveTo(new FilePath(dst));
+        Path destinationFile = dst.toPath().resolve("test-file");
+        assertTrue("file was not copied", Files.exists(destinationFile));
+        Set<PosixFilePermission> destinationPermissions = Files.getPosixFilePermissions(destinationFile);
+        assertEquals("file permissions not copied", allRWX, destinationPermissions);
+    }
+
+    @Issue("JENKINS-13128")
+    @Test public void copyRecursivePreservesLastModifiedTime() throws Exception {
+        File src = temp.newFolder("src");
+        File dst = temp.newFolder("dst");
+        Path sourceFile = Files.createFile(src.toPath().resolve("test-file"));
+        FileTime mtime = FileTime.from(42L, TimeUnit.SECONDS);
+        Files.setLastModifiedTime(sourceFile, mtime);
+        FilePath f = new FilePath(src);
+        f.copyRecursiveTo(new FilePath(dst));
+        Path destinationFile = dst.toPath().resolve("test-file");
+        assertTrue("file was not copied", Files.exists(destinationFile));
+        assertEquals("file mtime was not preserved", mtime, Files.getLastModifiedTime(destinationFile));
+    }
+
+    @Test
+    @Issue("SECURITY-904")
+    public void isDescendant_regularFiles() throws IOException, InterruptedException {
+        //  root
+        //      /workspace
+        //          /sub
+        //              sub-regular.txt
+        //          regular.txt
+        //      /protected
+        //          secret.txt
+        FilePath rootFolder = new FilePath(temp.newFolder("root"));
+        FilePath workspaceFolder = rootFolder.child("workspace");
+        FilePath subFolder = workspaceFolder.child("sub");
+        FilePath protectedFolder = rootFolder.child("protected");
+
+        FilePath regularFile = workspaceFolder.child("regular.txt");
+        regularFile.write("regular-file", StandardCharsets.UTF_8.name());
+        FilePath subRegularFile = subFolder.child("sub-regular.txt");
+        subRegularFile.write("sub-regular-file", StandardCharsets.UTF_8.name());
+
+        FilePath secretFile = protectedFolder.child("secret.txt");
+        secretFile.write("secrets", StandardCharsets.UTF_8.name());
+
+        assertTrue(workspaceFolder.isDescendant("."));
+        assertTrue(workspaceFolder.isDescendant("regular.txt"));
+        assertTrue(workspaceFolder.isDescendant("./regular.txt"));
+        assertTrue(workspaceFolder.isDescendant("sub/sub-regular.txt"));
+        assertTrue(workspaceFolder.isDescendant("sub//sub-regular.txt"));
+        assertTrue(workspaceFolder.isDescendant("sub/../sub/sub-regular.txt"));
+        assertTrue(workspaceFolder.isDescendant("./sub/../sub/sub-regular.txt"));
+
+        // nonexistent files
+        assertTrue(workspaceFolder.isDescendant("nonexistent.txt"));
+        assertTrue(workspaceFolder.isDescendant("sub/nonexistent.txt"));
+        assertTrue(workspaceFolder.isDescendant("nonexistent/nonexistent.txt"));
+        assertFalse(workspaceFolder.isDescendant("../protected/nonexistent.txt"));
+        assertFalse(workspaceFolder.isDescendant("../nonexistent/nonexistent.txt"));
+
+        // the intermediate path "./.." goes out of workspace and so is refused
+        assertFalse(workspaceFolder.isDescendant("./../workspace"));
+        assertFalse(workspaceFolder.isDescendant("./../workspace/"));
+        assertFalse(workspaceFolder.isDescendant("./../workspace/regular.txt"));
+        assertFalse(workspaceFolder.isDescendant("../workspace/regular.txt"));
+        assertFalse(workspaceFolder.isDescendant("./../../root/workspace/regular.txt"));
+
+        // attempt to reach other folder
+        assertFalse(workspaceFolder.isDescendant("../protected/secret.txt"));
+        assertFalse(workspaceFolder.isDescendant("./../protected/secret.txt"));
+    }
+
+    @Test
+    @Issue("SECURITY-904")
+    public void isDescendant_regularSymlinks() throws IOException, InterruptedException {
+        //  root
+        //      /workspace
+        //          /a
+        //              a.txt
+        //          /b
+        //              _a => symlink to ../a
+        //              _atxt => symlink to ../a/a.txt
+        //          regular.txt
+        //          _nonexistent => symlink to nonexistent (nonexistent folder)
+        //          _nonexistentUp => symlink to ../nonexistent (nonexistent folder + illegal)
+        //          _protected => symlink to ../protected (illegal)
+        //          _secrettxt => symlink to ../protected/secret.txt (illegal)
+        //      /protected
+        //          secret.txt
+        FilePath rootFolder = new FilePath(temp.newFolder("root"));
+        FilePath workspaceFolder = rootFolder.child("workspace");
+        FilePath aFolder = workspaceFolder.child("a");
+        FilePath bFolder = workspaceFolder.child("b");
+        FilePath protectedFolder = rootFolder.child("protected");
+
+        FilePath regularFile = workspaceFolder.child("regular.txt");
+        regularFile.write("regular-file", StandardCharsets.UTF_8.name());
+        FilePath aFile = aFolder.child("a.txt");
+        aFile.write("a-file", StandardCharsets.UTF_8.name());
+        FilePath bFile = bFolder.child("a.txt");
+        bFile.write("b-file", StandardCharsets.UTF_8.name());
+        bFolder.child("_a").symlinkTo("../a", null);
+        bFolder.child("_atxt").symlinkTo("../a/a.txt", null);
+        // illegal symlinks
+        workspaceFolder.child("_protected").symlinkTo("../protected", null);
+        workspaceFolder.child("_nonexistent").symlinkTo("nonexistent", null);
+        workspaceFolder.child("_nonexistentUp").symlinkTo("../nonexistent", null);
+        workspaceFolder.child("_secrettxt").symlinkTo("../protected/secret.txt", null);
+
+        FilePath secretFile = protectedFolder.child("secret.txt");
+        secretFile.write("secrets", StandardCharsets.UTF_8.name());
+
+        assertTrue(workspaceFolder.isDescendant("regular.txt"));
+        assertTrue(workspaceFolder.isDescendant("_nonexistent"));
+        assertTrue(workspaceFolder.isDescendant("a"));
+        assertTrue(workspaceFolder.isDescendant("a/a.txt"));
+        assertTrue(workspaceFolder.isDescendant("a/../a/a.txt"));
+        assertTrue(workspaceFolder.isDescendant("b/../a/a.txt"));
+        assertTrue(workspaceFolder.isDescendant("b"));
+        assertTrue(workspaceFolder.isDescendant("./b"));
+        assertTrue(workspaceFolder.isDescendant("b/_a/a.txt"));
+        assertTrue(workspaceFolder.isDescendant("b/_a/../a/a.txt"));
+        assertTrue(workspaceFolder.isDescendant("b/_atxt"));
+
+        // nonexistent but illegal
+        assertFalse(workspaceFolder.isDescendant("_nonexistentUp"));
+        // illegal symlinks
+        assertFalse(workspaceFolder.isDescendant("_protected"));
+        assertFalse(workspaceFolder.isDescendant("_protected/"));
+        assertFalse(workspaceFolder.isDescendant("_protected/secret.txt"));
+        assertFalse(workspaceFolder.isDescendant("./_protected/secret.txt"));
+        assertFalse(workspaceFolder.isDescendant("_secrettxt"));
+        assertFalse(workspaceFolder.isDescendant("./_secrettxt"));
+    }
+
+    @Test
+    @Issue("SECURITY-904")
+    public void isDescendant_windowsSpecificSymlinks() throws Exception {
+        assumeTrue(Functions.isWindows());
+        //  root
+        //      /workspace
+        //          /a
+        //              a.txt
+        //          /b
+        //              b.txt
+        //              _a => junction to ../a
+        //          regular.txt
+        //          _nonexistent => junction to nonexistent (nonexistent folder)
+        //          _nonexistentUp => junction to ../nonexistent (nonexistent and illegal)
+        //          _protected => junction to ../protected (illegal)
+        //      /protected
+        //          secret.txt
+        File root = temp.newFolder("root");
+        FilePath rootFolder = new FilePath(root);
+        FilePath workspaceFolder = rootFolder.child("workspace");
+        FilePath aFolder = workspaceFolder.child("a");
+        FilePath bFolder = workspaceFolder.child("b");
+        FilePath protectedFolder = rootFolder.child("protected");
+
+        FilePath regularFile = workspaceFolder.child("regular.txt");
+        regularFile.write("regular-file", StandardCharsets.UTF_8.name());
+        FilePath aFile = aFolder.child("a.txt");
+        aFile.write("a-file", StandardCharsets.UTF_8.name());
+        FilePath bFile = bFolder.child("a.txt");
+        bFile.write("b-file", StandardCharsets.UTF_8.name());
+
+        createJunction(new File(root, "/workspace/b/_a"), new File(root, "/workspace/a"));
+        createJunction(new File(root, "/workspace/_nonexistent"), new File(root, "/workspace/nonexistent"));
+        createJunction(new File(root, "/workspace/_nonexistentUp"), new File(root, "/nonexistent"));
+        createJunction(new File(root, "/workspace/_protected"), new File(root, "/protected"));
+
+        FilePath secretFile = protectedFolder.child("secret.txt");
+        secretFile.write("secrets", StandardCharsets.UTF_8.name());
+
+        assertTrue(workspaceFolder.isDescendant("b"));
+        assertTrue(workspaceFolder.isDescendant("b/_a/a.txt"));
+        assertTrue(workspaceFolder.isDescendant("b\\_a\\a.txt"));
+        assertTrue(workspaceFolder.isDescendant("b\\_a\\../a/a.txt"));
+        assertTrue(workspaceFolder.isDescendant("b\\_a\\..\\a\\a.txt"));
+        assertTrue(workspaceFolder.isDescendant(".\\b\\_a\\..\\a\\a.txt"));
+        assertTrue(workspaceFolder.isDescendant("b/_a/../a/a.txt"));
+        assertTrue(workspaceFolder.isDescendant("./b/_a/../a/a.txt"));
+
+        // nonexistent and not proven illegal, the junction links are not resolved
+        // by Util.resolveSymlinkToFile / neither Path.toRealPath under Windows
+        assertTrue(workspaceFolder.isDescendant("_nonexistent"));
+        assertTrue(workspaceFolder.isDescendant("_nonexistent/"));
+        assertTrue(workspaceFolder.isDescendant("_nonexistent/.."));
+        assertTrue(workspaceFolder.isDescendant("_nonexistentUp"));
+
+        // illegal symlinks
+        assertFalse(workspaceFolder.isDescendant("_protected"));
+        assertFalse(workspaceFolder.isDescendant("_protected/../a"));
+    }
+
+    private void createJunction(File from, File to) throws Exception {
+        Process p = Runtime.getRuntime().exec(new String[]{"cmd", "/c", "mklink", "/J", from.getAbsolutePath(), to.getAbsolutePath()});
+        p.waitFor(2, TimeUnit.SECONDS);
+    }
+
+    @Issue("SECURITY-904")
+    public void isDescendant_throwIfParentDoesNotExist_symlink() throws Exception {
+        FilePath rootFolder = new FilePath(temp.newFolder("root"));
+        FilePath aFolder = rootFolder.child("a");
+        aFolder.mkdirs();
+        FilePath linkToNonexistent = aFolder.child("linkToNonexistent");
+        linkToNonexistent.symlinkTo("__nonexistent__", null);
+
+        assertThat(linkToNonexistent.isDescendant("."), is(false));
+    }
+
+    @Issue("SECURITY-904")
+    public void isDescendant_throwIfParentDoesNotExist_directNonexistent() throws Exception {
+        FilePath rootFolder = new FilePath(temp.newFolder("root"));
+        FilePath nonexistent = rootFolder.child("nonexistent");
+        assertThat(nonexistent.isDescendant("."), is(false));
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    @Issue("SECURITY-904")
+    public void isDescendant_throwIfAbsolutePathGiven() throws Exception {
+        FilePath rootFolder = new FilePath(temp.newFolder("root"));
+        rootFolder.mkdirs();
+        rootFolder.isDescendant(temp.newFile().getAbsolutePath());
+    }
+
+    @Test
+    @Issue("SECURITY-904")
+    public void isDescendant_worksEvenInSymbolicWorkspace() throws Exception {
+        //  root
+        //      /w
+        //          /_workspace => symlink to ../workspace
+        //      /workspace
+        //          /a
+        //              a.txt
+        //          /b
+        //              _a => symlink to ../a
+        //              _atxt => symlink to ../a/a.txt
+        //          regular.txt
+        //          _nonexistent => symlink to nonexistent (nonexistent folder)
+        //          _nonexistentUp => symlink to ../nonexistent (nonexistent folder + illegal)
+        //          _protected => symlink to ../protected (illegal)
+        //          _secrettxt => symlink to ../protected/secret.txt (illegal)
+        //      /protected
+        //          secret.txt
+        FilePath rootFolder = new FilePath(temp.newFolder("root"));
+        FilePath wFolder = rootFolder.child("w");
+        FilePath workspaceFolder = rootFolder.child("workspace");
+        FilePath aFolder = workspaceFolder.child("a");
+        FilePath bFolder = workspaceFolder.child("b");
+        FilePath protectedFolder = rootFolder.child("protected");
+
+        FilePath regularFile = workspaceFolder.child("regular.txt");
+        regularFile.write("regular-file", StandardCharsets.UTF_8.name());
+        FilePath aFile = aFolder.child("a.txt");
+        aFile.write("a-file", StandardCharsets.UTF_8.name());
+        FilePath bFile = bFolder.child("a.txt");
+        bFile.write("b-file", StandardCharsets.UTF_8.name());
+        bFolder.child("_a").symlinkTo("../a", null);
+        bFolder.child("_atxt").symlinkTo("../a/a.txt", null);
+        // illegal symlinks
+        workspaceFolder.child("_protected").symlinkTo("../protected", null);
+        workspaceFolder.child("_protected2").symlinkTo("../../protected", null);
+        workspaceFolder.child("_nonexistent").symlinkTo("nonexistent", null);
+        workspaceFolder.child("_nonexistentUp").symlinkTo("../nonexistent", null);
+        workspaceFolder.child("_secrettxt").symlinkTo("../protected/secret.txt", null);
+        workspaceFolder.child("_secrettxt2").symlinkTo("../../protected/secret.txt", null);
+
+        wFolder.mkdirs();
+        FilePath symbolicWorkspace = wFolder.child("_w");
+        symbolicWorkspace.symlinkTo("../workspace", null);
+
+        FilePath secretFile = protectedFolder.child("secret.txt");
+        secretFile.write("secrets", StandardCharsets.UTF_8.name());
+
+        assertTrue(symbolicWorkspace.isDescendant("regular.txt"));
+        assertTrue(symbolicWorkspace.isDescendant("_nonexistent"));
+        assertTrue(symbolicWorkspace.isDescendant("a"));
+        assertTrue(symbolicWorkspace.isDescendant("a/a.txt"));
+        assertTrue(symbolicWorkspace.isDescendant("b"));
+        assertTrue(symbolicWorkspace.isDescendant("b/_a/a.txt"));
+        assertTrue(symbolicWorkspace.isDescendant("b/_atxt"));
+
+        // nonexistent but illegal
+        assertFalse(symbolicWorkspace.isDescendant("_nonexistentUp"));
+        // illegal symlinks
+        assertFalse(symbolicWorkspace.isDescendant("_protected"));
+        assertFalse(symbolicWorkspace.isDescendant("_protected/"));
+        assertFalse(symbolicWorkspace.isDescendant("_protected/secret.txt"));
+        assertFalse(symbolicWorkspace.isDescendant("./_protected/secret.txt"));
+        assertFalse(symbolicWorkspace.isDescendant("_protected2"));
+        assertFalse(symbolicWorkspace.isDescendant("_protected2/secret.txt"));
+        assertFalse(symbolicWorkspace.isDescendant("_secrettxt"));
+        assertFalse(symbolicWorkspace.isDescendant("./_secrettxt"));
+        assertFalse(symbolicWorkspace.isDescendant("_secrettxt2"));
     }
 }

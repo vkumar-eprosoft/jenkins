@@ -31,6 +31,8 @@ import hudson.model.Describable;
 import hudson.model.Job;
 import hudson.model.TaskListener;
 import hudson.util.io.ArchiverFactory;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import jenkins.model.Jenkins;
 import hudson.model.listeners.RunListener;
 import hudson.scm.SCM;
@@ -38,7 +40,6 @@ import org.jenkinsci.Symbol;
 
 import java.io.BufferedOutputStream;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 
@@ -52,7 +53,7 @@ import java.io.OutputStream;
  * STILL A WORK IN PROGRESS. SUBJECT TO CHANGE! DO NOT EXTEND.
  *
  * TODO: is this per {@link Computer}? Per {@link Job}?
- *   -> probably per agent.
+ *   → probably per agent.
  *
  * <h2>Design Problems</h2>
  * <ol>
@@ -176,7 +177,7 @@ public abstract class FileSystemProvisioner implements ExtensionPoint, Describab
     public abstract WorkspaceSnapshot snapshot(AbstractBuild<?,?> build, FilePath ws, String glob, TaskListener listener) throws IOException, InterruptedException;
 
     public FileSystemProvisionerDescriptor getDescriptor() {
-        return (FileSystemProvisionerDescriptor) Jenkins.getInstance().getDescriptorOrDie(getClass());
+        return (FileSystemProvisionerDescriptor) Jenkins.get().getDescriptorOrDie(getClass());
     }
 
     /**
@@ -188,7 +189,7 @@ public abstract class FileSystemProvisioner implements ExtensionPoint, Describab
      * Returns all the registered {@link FileSystemProvisioner} descriptors.
      */
     public static DescriptorExtensionList<FileSystemProvisioner,FileSystemProvisionerDescriptor> all() {
-        return Jenkins.getInstance().<FileSystemProvisioner,FileSystemProvisionerDescriptor>getDescriptorList(FileSystemProvisioner.class);
+        return Jenkins.get().getDescriptorList(FileSystemProvisioner.class);
     }
 
     /**
@@ -215,11 +216,10 @@ public abstract class FileSystemProvisioner implements ExtensionPoint, Describab
          */
         public WorkspaceSnapshot snapshot(AbstractBuild<?, ?> build, FilePath ws, String glob, TaskListener listener) throws IOException, InterruptedException {
             File wss = new File(build.getRootDir(),"workspace.tgz");
-            OutputStream os = new BufferedOutputStream(new FileOutputStream(wss));
-            try {
-                ws.archive(ArchiverFactory.TARGZ,os,glob);
-            } finally {
-                os.close();
+            try (OutputStream os = new BufferedOutputStream(Files.newOutputStream(wss.toPath()))) {
+                ws.archive(ArchiverFactory.TARGZ, os, glob);
+            } catch (InvalidPathException e) {
+                throw new IOException(e);
             }
             return new WorkspaceSnapshotImpl();
         }

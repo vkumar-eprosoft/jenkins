@@ -1,6 +1,8 @@
 package jenkins.model.lazy;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import org.junit.Test;
 
 /**
@@ -32,6 +34,17 @@ public class SortedIntListTest {
         assertTrue(l.isInRange(1));
         assertTrue(l.isInRange(2));
         assertFalse(l.isInRange(3));
+    }
+
+    @Test public void max() {
+        SortedIntList l = new SortedIntList(5);
+        assertEquals(0, l.max());
+        l.add(1);
+        assertEquals(1, l.max());
+        l.add(5);
+        assertEquals(5, l.max());
+        l.add(10);
+        assertEquals(10, l.max());
     }
 
 }

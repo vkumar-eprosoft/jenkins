@@ -146,27 +146,26 @@ public class LargeText {
     public long writeLogTo(long start, Writer w) throws IOException {
         CountingOutputStream os = new CountingOutputStream(new WriterOutputStream(w));
 
-        Session f = source.open();
-        f.skip(start);
+        try (Session f = source.open()) {
+            f.skip(start);
 
-        if(completed) {
-            // write everything till EOF
-            byte[] buf = new byte[1024];
-            int sz;
-            while((sz=f.read(buf))>=0)
-                os.write(buf,0,sz);
-        } else {
-            ByteBuf buf = new ByteBuf(null,f);
-            HeadMark head = new HeadMark(buf);
-            TailMark tail = new TailMark(buf);
+            if (completed) {
+                // write everything till EOF
+                byte[] buf = new byte[1024];
+                int sz;
+                while ((sz = f.read(buf)) >= 0)
+                    os.write(buf, 0, sz);
+            } else {
+                ByteBuf buf = new ByteBuf(null, f);
+                HeadMark head = new HeadMark(buf);
+                TailMark tail = new TailMark(buf);
 
-            while(tail.moveToNextLine(f)) {
-                head.moveTo(tail,os);
+                while (tail.moveToNextLine(f)) {
+                    head.moveTo(tail, os);
+                }
+                head.finish(os);
             }
-            head.finish(os);
         }
-
-        f.close();
         os.flush();
 
         return os.getCount()+start;
@@ -308,7 +307,7 @@ public class LargeText {
      * Represents the read session of the {@link Source}.
      * Methods generally follow the contracts of {@link InputStream}.
      */
-    private interface Session {
+    private interface Session extends AutoCloseable {
         void close() throws IOException;
         void skip(long start) throws IOException;
         int read(byte[] buf) throws IOException;

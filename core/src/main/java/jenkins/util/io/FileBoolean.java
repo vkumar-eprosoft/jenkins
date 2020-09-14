@@ -1,9 +1,10 @@
 package jenkins.util.io;
 
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import jenkins.model.Jenkins;
 
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -28,7 +29,7 @@ public class FileBoolean {
     }
 
     public FileBoolean(Class owner, String name) {
-        this(new File(Jenkins.getInstance().getRootDir(),owner.getName().replace('$','.')+'/'+name));
+        this(new File(Jenkins.get().getRootDir(),owner.getName().replace('$','.')+'/'+name));
     }
 
     /**
@@ -56,9 +57,9 @@ public class FileBoolean {
     public void on() {
         try {
             file.getParentFile().mkdirs();
-            new FileOutputStream(file).close();
+            Files.newOutputStream(file.toPath()).close();
             get();  // update state
-        } catch (IOException e) {
+        } catch (IOException | InvalidPathException e) {
             LOGGER.log(Level.WARNING, "Failed to touch "+file);
         }
     }

@@ -15,7 +15,7 @@ import org.acegisecurity.userdetails.UserDetails;
 import org.jenkinsci.Symbol;
 import org.kohsuke.stapler.StaplerRequest;
 
-import javax.annotation.Nonnull;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -48,25 +48,33 @@ public class LastGrantedAuthoritiesProperty extends UserProperty {
     public GrantedAuthority[] getAuthorities() {
         String[] roles = this.roles;    // capture to a variable for immutability
 
-        GrantedAuthority[] r = new GrantedAuthority[roles==null ? 1 : roles.length+1];
-        r[0] = SecurityRealm.AUTHENTICATED_AUTHORITY;
-        if (roles != null) {
-            for (int i = 1; i < r.length; i++) {
-                r[i] = new GrantedAuthorityImpl(roles[i - 1]);
+        if(roles == null){
+            return new GrantedAuthority[]{SecurityRealm.AUTHENTICATED_AUTHORITY};
+        }
+
+        String authenticatedRole = SecurityRealm.AUTHENTICATED_AUTHORITY.getAuthority();
+        List<GrantedAuthority> grantedAuthorities = new ArrayList<>(roles.length + 1);
+        grantedAuthorities.add(new GrantedAuthorityImpl(authenticatedRole));
+
+        for (String role : roles) {
+            // to avoid having twice that role
+            if (!authenticatedRole.equals(role)) {
+                grantedAuthorities.add(new GrantedAuthorityImpl(role));
             }
         }
-        return r;
+
+        return grantedAuthorities.toArray(new GrantedAuthority[0]);
     }
 
     /**
      * Persist the information with the new {@link UserDetails}.
      */
-    public void update(@Nonnull Authentication auth) throws IOException {
-        List<String> roles = new ArrayList<String>();
+    public void update(@NonNull Authentication auth) throws IOException {
+        List<String> roles = new ArrayList<>();
         for (GrantedAuthority ga : auth.getAuthorities()) {
             roles.add(ga.getAuthority());
         }
-        String[] a = roles.toArray(new String[roles.size()]);
+        String[] a = roles.toArray(new String[0]);
         if (!Arrays.equals(this.roles,a)) {
             this.roles = a;
             this.timestamp = System.currentTimeMillis();
@@ -91,15 +99,7 @@ public class LastGrantedAuthoritiesProperty extends UserProperty {
     @Extension
     public static class SecurityListenerImpl extends SecurityListener {
         @Override
-        protected void authenticated(@Nonnull UserDetails details) {
-        }
-
-        @Override
-        protected void failedToAuthenticate(@Nonnull String username) {
-        }
-
-        @Override
-        protected void loggedIn(@Nonnull String username) {
+        protected void loggedIn(@NonNull String username) {
             try {
                 // user should have been created but may not have been saved for some realms
                 // but as this is a callback of a successful login we can safely create the user.
@@ -116,13 +116,13 @@ public class LastGrantedAuthoritiesProperty extends UserProperty {
         }
 
         @Override
-        protected void failedToLogIn(@Nonnull String username) {
+        protected void failedToLogIn(@NonNull String username) {
             // while this initially seemed like a good idea to avoid allowing wrong impersonation for too long,
             // doing this means a malicious user can break the impersonation capability
             // just by failing to login. See ApiTokenFilter that does the following, which seems better:
             /*
                 try {
-                    Jenkins.getInstance().getSecurityRealm().loadUserByUsername(username);
+                    Jenkins.get().getSecurityRealm().loadUserByUsername(username);
                 } catch (UserMayOrMayNotExistException x) {
                     // OK, give them the benefit of the doubt.
                 } catch (UsernameNotFoundException x) {
@@ -142,10 +142,6 @@ public class LastGrantedAuthoritiesProperty extends UserProperty {
 //            } catch (IOException e) {
 //                LOGGER.log(Level.WARNING, "Failed to record granted authorities",e);
 //            }
-        }
-
-        @Override
-        protected void loggedOut(@Nonnull String username) {
         }
     }
 

@@ -24,23 +24,44 @@
 
 package hudson;
 
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import org.apache.tools.ant.filters.StringInputStream;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.xml.sax.SAXException;
 import java.io.IOException;
-import static org.hamcrest.core.IsInstanceOf.instanceOf;
-import static org.hamcrest.core.StringContains.containsString;
-import static org.junit.Assert.*;
-import org.junit.Rule;
-import org.junit.rules.TemporaryFolder;
+import java.net.MalformedURLException;
+import java.net.URL;
+import java.nio.file.Path;
+import java.util.jar.Attributes;
+import java.util.jar.Manifest;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
+import org.apache.commons.io.FileUtils;
 import org.jvnet.hudson.test.Issue;
 
+import static org.hamcrest.CoreMatchers.*;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.core.IsInstanceOf.instanceOf;
+import static org.hamcrest.core.StringContains.containsString;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
+
+/**
+ * Tests of {@link PluginManager}.
+ */
 public class PluginManagerTest {
 
-    @Rule public TemporaryFolder tmp = new TemporaryFolder();
+    @TempDir Path tmp;
 
-    @Test public void parseRequestedPlugins() throws Exception {
-        assertEquals("{other=2.0, stuff=1.2}", new LocalPluginManager(tmp.getRoot())
+    @Test
+    public void parseRequestedPlugins() throws Exception {
+        Path output = Files.createFile(
+                tmp.resolve("output.txt")
+        );
+        assertEquals("{other=2.0, stuff=1.2}", new LocalPluginManager(output.toFile())
                 .parseRequestedPlugins(new StringInputStream("<root><stuff plugin='stuff@1.0'><more plugin='other@2.0'><things plugin='stuff@1.2'/></more></stuff></root>")).toString());
     }
 
@@ -68,4 +89,85 @@ public class PluginManagerTest {
             assertThat(ex.getCause().getMessage(), containsString("Refusing to resolve entity with publicId(null) and systemId (file:///)"));
         }
     }
+    
+    @Test
+    public void shouldProperlyParseManifestFromJar() throws IOException {
+        File jar = createHpiWithManifest();
+        final Manifest manifest = PluginManager.parsePluginManifest(jar.toURI().toURL());
+        
+        assertThat("manifest should have been read from the sample", manifest, notNullValue());
+        assertAttribute(manifest, "Created-By", "Apache Maven");
+        assertAttribute(manifest, "Short-Name", "matrix-auth");
+        
+        // Multi-line entries
+        assertAttribute(manifest, "Specification-Title", "Offers matrix-based security authorization strategies (global and per-project).");
+        assertAttribute(manifest, "Url", "http://wiki.jenkins-ci.org/display/JENKINS/Matrix+Authorization+Strategy+Plugin");
+    
+        // Empty field
+        assertAttribute(manifest, "Plugin-Developers", null);
+    }
+    
+    @Test
+    public void shouldProperlyRetrieveModificationDate() throws IOException {
+        File jar = createHpiWithManifest();
+        URL url = toManifestUrl(jar);
+        assertThat("Manifest last modified date should be equal to the file date", 
+                PluginManager.getModificationDate(url), 
+                equalTo(jar.lastModified()));
+    }
+    
+    private static void assertAttribute(Manifest manifest, String attributeName, String value) throws AssertionError {
+        Attributes attributes = manifest.getMainAttributes();
+        assertThat("Main attributes must not be empty", attributes, notNullValue());
+        assertThat("Attribute '" + attributeName + "' does not match the sample", 
+                attributes.getValue(attributeName), 
+                equalTo(value));
+        
+    }
+    
+    private static final String SAMPLE_MANIFEST_FILE = "Manifest-Version: 1.0\n" +
+                "Archiver-Version: Plexus Archiver\n" +
+                "Created-By: Apache Maven\n" +
+                "Built-By: jglick\n" +
+                "Build-Jdk: 1.8.0_92\n" +
+                "Extension-Name: matrix-auth\n" +
+                "Specification-Title: \n" +
+                " Offers matrix-based security \n" +
+                " authorization strate\n" +
+                " gies (global and per-project).\n" +
+                "Implementation-Title: matrix-auth\n" +
+                "Implementation-Version: 1.4\n" +
+                "Group-Id: org.jenkins-ci.plugins\n" +
+                "Short-Name: matrix-auth\n" +
+                "Long-Name: Matrix Authorization Strategy Plugin\n" +
+                "Url: http://wiki.jenkins-ci.org/display/JENKINS/Matrix+Authorization+S\n" +
+                " trategy+Plugin\n" +
+                "Plugin-Version: 1.4\n" +
+                "Hudson-Version: 1.609.1\n" +
+                "Jenkins-Version: 1.609.1\n" +
+                "Plugin-Dependencies: icon-shim:2.0.3,cloudbees-folder:5.2.2;resolution\n" +
+                " :=optional\n" +
+                "Plugin-Developers: ";
+    
+    private File createHpiWithManifest() throws IOException {
+        String manifestPath = "META-INF/MANIFEST.MF";
+        new File("META-INF").mkdir();
+        FileUtils.write(new File(tmp.toFile(), manifestPath), SAMPLE_MANIFEST_FILE, StandardCharsets.UTF_8);
+        
+        final File f = new File(tmp.toFile(), "my.hpi");
+        try(ZipOutputStream out = new ZipOutputStream(Files.newOutputStream(f.toPath()))) {
+            ZipEntry e = new ZipEntry(manifestPath);
+            out.putNextEntry(e);
+            byte[] data = SAMPLE_MANIFEST_FILE.getBytes();
+            out.write(data, 0, data.length);
+            out.closeEntry();
+        }
+        return f;
+    }
+        
+    
+    private URL toManifestUrl(File jarFile) throws MalformedURLException {
+        final String manifestPath = "META-INF/MANIFEST.MF";
+        return new URL("jar:" + jarFile.toURI().toURL() + "!/" + manifestPath);
+    }  
 }

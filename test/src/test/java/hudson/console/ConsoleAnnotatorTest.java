@@ -3,6 +3,7 @@ package hudson.console;
 import com.gargoylesoftware.htmlunit.Page;
 import com.gargoylesoftware.htmlunit.TextPage;
 import com.gargoylesoftware.htmlunit.WebRequest;
+import com.gargoylesoftware.htmlunit.html.DomElement;
 import com.gargoylesoftware.htmlunit.html.DomNodeUtil;
 import com.gargoylesoftware.htmlunit.html.HtmlPage;
 import hudson.FilePath;
@@ -27,7 +28,12 @@ import java.net.URL;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.Future;
-import static org.junit.Assert.*;
+import jenkins.model.Jenkins;
+import static org.hamcrest.Matchers.containsString;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.Assert.assertTrue;
 import org.junit.Rule;
 import org.junit.Test;
 import org.jvnet.hudson.test.Issue;
@@ -80,16 +86,17 @@ public class ConsoleAnnotatorTest {
      * Only annotates the first occurrence of "ooo".
      */
     @TestExtension("completedStatelessLogAnnotation")
-    public static final ConsoleAnnotatorFactory DEMO_ANNOTATOR = new ConsoleAnnotatorFactory() {
-        public ConsoleAnnotator newInstance(Object context) {
+    public static final class DemoAnnotatorFactory extends ConsoleAnnotatorFactory<FreeStyleBuild> {
+        @Override
+        public ConsoleAnnotator<FreeStyleBuild> newInstance(FreeStyleBuild context) {
             return new DemoAnnotator();
         }
-    };
+    }
 
-    public static class DemoAnnotator extends ConsoleAnnotator<Object> {
+    public static class DemoAnnotator extends ConsoleAnnotator<FreeStyleBuild> {
         private static final String ANNOTATE_TEXT = "ooo" + System.getProperty("line.separator");
         @Override
-        public ConsoleAnnotator annotate(Object build, MarkupText text) {
+        public ConsoleAnnotator<FreeStyleBuild> annotate(FreeStyleBuild build, MarkupText text) {
             if (text.getText().equals(ANNOTATE_TEXT)) {
                 text.addMarkup(0,3,"<b class=demo>","</b>");
                 return null;
@@ -117,8 +124,7 @@ public class ConsoleAnnotatorTest {
 
         // make sure raw console output doesn't include the garbage
         TextPage raw = (TextPage)r.createWebClient().goTo(b.getUrl()+"consoleText","text/plain");
-        System.out.println(raw.getContent());
-        assertTrue(raw.getContent().contains("\nabc\ndef\n"));
+        assertThat(raw.getContent(), containsString("\nabc\ndef\n"));
     }
 
 
@@ -287,6 +293,12 @@ public class ConsoleAnnotatorTest {
         // verify that there's an element inserted by the script
         assertNotNull(html.getElementById("inserted-by-test1"));
         assertNotNull(html.getElementById("inserted-by-test2"));
+        for (DomElement e : html.getElementsByTagName("script")) {
+            String src = e.getAttribute("src");
+            if (!src.isEmpty()) {
+                assertThat(src, containsString(Jenkins.SESSION_HASH));
+            }
+        }
     }
 
     public static final class JustToIncludeScript extends ConsoleNote<Object> {

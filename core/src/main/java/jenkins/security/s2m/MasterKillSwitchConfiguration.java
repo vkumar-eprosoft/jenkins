@@ -1,6 +1,8 @@
 package jenkins.security.s2m;
 
 import hudson.Extension;
+
+import edu.umd.cs.findbugs.annotations.NonNull;
 import javax.inject.Inject;
 import jenkins.model.GlobalConfiguration;
 import jenkins.model.GlobalConfigurationCategory;
@@ -12,7 +14,7 @@ import org.kohsuke.stapler.StaplerRequest;
  * Exposes {@link AdminWhitelistRule#masterKillSwitch} to the admin.
  *
  * @author Kohsuke Kawaguchi
- * @since 1.THU
+ * @since 1.587 / 1.580.1
  */
 @Extension
 public class MasterKillSwitchConfiguration extends GlobalConfiguration {
@@ -23,7 +25,7 @@ public class MasterKillSwitchConfiguration extends GlobalConfiguration {
     Jenkins jenkins;
 
     @Override
-    public GlobalConfigurationCategory getCategory() {
+    public @NonNull GlobalConfigurationCategory getCategory() {
         return GlobalConfigurationCategory.get(GlobalConfigurationCategory.Security.class);
     }
 
@@ -46,7 +48,7 @@ public class MasterKillSwitchConfiguration extends GlobalConfiguration {
      * Unless this option is relevant, we don't let users choose this.
      */
     public boolean isRelevant() {
-        return jenkins.hasPermission(Jenkins.RUN_SCRIPTS) && jenkins.isUseSecurity();
+        return jenkins.hasPermission(Jenkins.ADMINISTER) && jenkins.isUseSecurity();
     }
 }
 

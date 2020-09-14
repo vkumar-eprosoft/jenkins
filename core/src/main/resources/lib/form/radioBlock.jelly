@@ -24,7 +24,7 @@ THE SOFTWARE.
 
 <?jelly escape-by-default='true'?>
 <j:jelly xmlns:j="jelly:core" xmlns:st="jelly:stapler" xmlns:d="jelly:define" xmlns:l="/lib/layout" xmlns:t="/lib/hudson" xmlns:f="/lib/form">
-  <st:documentation>on
+  <st:documentation>
     Radio button with a label that hides additional controls.
     When checked, those additional controls are displayed. This is useful
     for presenting mutually exclusive options, where each option comes
@@ -57,8 +57,13 @@ THE SOFTWARE.
 	<tr class="radio-block-start row-group-start ${attrs.inline?'':'row-set-start'}" hasHelp="${attrs.help!=null}"><!-- this ID marks the beginning -->
 	  <td colspan="3">
       <label>
-	      <input type="radio" name="${name}" value="${value}"
-             class="radio-block-control block-control" checked="${checked?'true':null}" />
+	      <input type="radio"
+               name="${name}"
+               value="${value}"
+               class="radio-block-control block-control"
+               checked="${checked ? 'true' : null}"
+               disabled="${readOnlyMode ? 'true' : null}"
+        />
         ${title}
       </label>
     </td>

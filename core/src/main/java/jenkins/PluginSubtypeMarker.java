@@ -23,6 +23,7 @@
  */
 package jenkins;
 
+import hudson.Functions;
 import hudson.Plugin;
 import org.kohsuke.MetaInfServices;
 
@@ -42,9 +43,8 @@ import javax.tools.FileObject;
 import javax.tools.StandardLocation;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
-import java.io.PrintWriter;
-import java.io.StringWriter;
 import java.io.Writer;
+import java.nio.charset.StandardCharsets;
 import java.util.Set;
 
 /**
@@ -69,9 +69,7 @@ public class PluginSubtypeMarker extends AbstractProcessor {
                             try {
                                 write(e);
                             } catch (IOException x) {
-                                StringWriter sw = new StringWriter();
-                                x.printStackTrace(new PrintWriter(sw));
-                                processingEnv.getMessager().printMessage(Kind.ERROR,sw.toString(),e);
+                                processingEnv.getMessager().printMessage(Kind.ERROR, Functions.printThrowable(x), e);
                             }
                         }
                     }
@@ -93,11 +91,8 @@ public class PluginSubtypeMarker extends AbstractProcessor {
             }
 
             return false;
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
             // javac sucks at reporting errors in annotation processors
-            e.printStackTrace();
-            throw e;
-        } catch (Error e) {
             e.printStackTrace();
             throw e;
         }
@@ -111,11 +106,8 @@ public class PluginSubtypeMarker extends AbstractProcessor {
     private void write(TypeElement c) throws IOException {
         FileObject f = processingEnv.getFiler().createResource(StandardLocation.CLASS_OUTPUT,
                 "", "META-INF/services/hudson.Plugin");
-        Writer w = new OutputStreamWriter(f.openOutputStream(),"UTF-8");
-        try {
+        try (Writer w = new OutputStreamWriter(f.openOutputStream(), StandardCharsets.UTF_8)) {
             w.write(c.getQualifiedName().toString());
-        } finally {
-            w.close();
         }
     }
 

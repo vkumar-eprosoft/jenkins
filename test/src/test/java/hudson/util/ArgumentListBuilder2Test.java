@@ -27,8 +27,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assume.assumeTrue;
+import static org.junit.Assume.*;
 import hudson.Functions;
 import hudson.Launcher.LocalLauncher;
 import hudson.Launcher.RemoteLauncher;
@@ -40,11 +39,15 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.jvnet.hudson.test.Email;
 import org.jvnet.hudson.test.JenkinsRule;
+import org.jvnet.hudson.test.LoggerRule;
 
 import com.google.common.base.Joiner;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.StringWriter;
+import java.util.logging.Level;
+import jenkins.util.SystemProperties;
 
 /**
  * @author Kohsuke Kawaguchi
@@ -53,6 +56,11 @@ public class ArgumentListBuilder2Test {
 
     @Rule
     public JenkinsRule j = new JenkinsRule();
+
+    @Rule
+    public LoggerRule logging = new LoggerRule().
+        record(StreamTaskListener.class, Level.FINE).
+        record(SystemProperties.class, Level.FINE);
 
     /**
      * Makes sure {@link RemoteLauncher} properly masks arguments.
@@ -64,13 +72,12 @@ public class ArgumentListBuilder2Test {
         args.add("java");
         args.addMasked("-version");
 
-        Slave s = j.createSlave();
-        s.toComputer().connect(false).get();
+        Slave s = j.createOnlineSlave();
+        j.showAgentLogs(s, logging);
 
         StringWriter out = new StringWriter();
         assertEquals(0,s.createLauncher(new StreamTaskListener(out)).launch().cmds(args).join());
-        System.out.println(out);
-        assertTrue(out.toString().contains("$ java ********"));
+        assertThat(out.toString(), containsString("$ java ********"));
     }
 
     @Test
@@ -90,9 +97,16 @@ public class ArgumentListBuilder2Test {
     }
 
     public String echoArgs(String... arguments) throws Exception {
-        ArgumentListBuilder args = new ArgumentListBuilder(JavaEnvUtils.getJreExecutable("java"), "-cp", "target/test-classes/", "hudson.util.EchoCommand");
-        args.add(arguments);
-        args = args.toWindowsCommand();
+        String testHarnessJar = new File(Class.forName("hudson.util.EchoCommand")
+                .getProtectionDomain()
+                .getCodeSource()
+                .getLocation().toURI()).getAbsolutePath();
+
+        ArgumentListBuilder args = new ArgumentListBuilder(
+                    JavaEnvUtils.getJreExecutable("java").replaceAll("^\"|\"$", ""),
+                    "-cp", testHarnessJar, "hudson.util.EchoCommand")
+                .add(arguments)
+                .toWindowsCommand();
 
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         final StreamTaskListener listener = new StreamTaskListener(out);
@@ -106,7 +120,7 @@ public class ArgumentListBuilder2Test {
         int code = p.join();
         listener.close();
 
-        assertThat(code, equalTo(0));
+        assumeThat("Failed to run " + args, code, equalTo(0));
         return out.toString();
     }
 }

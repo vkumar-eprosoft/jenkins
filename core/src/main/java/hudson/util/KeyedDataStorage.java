@@ -31,8 +31,8 @@ import java.lang.ref.SoftReference;
 import java.text.MessageFormat;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import edu.umd.cs.findbugs.annotations.NonNull;
 
 /**
  * Convenient base class for implementing data storage.
@@ -63,7 +63,7 @@ public abstract class KeyedDataStorage<T,P> {
      * If it's {@link Loading}, then that indicates the fingerprint is being loaded.
      * The thread can wait on this object to be notified when the loading completes.
      */
-    private final ConcurrentHashMap<String,Object> core = new ConcurrentHashMap<String,Object>();
+    private final ConcurrentHashMap<String,Object> core = new ConcurrentHashMap<>();
 
     /**
      * Used in {@link KeyedDataStorage#core} to indicate that the loading of a fingerprint
@@ -107,7 +107,7 @@ public abstract class KeyedDataStorage<T,P> {
      *      Additional parameters needed to create a new data object. Can be null.
      * @throws IOException Loading error
      */
-    public @Nonnull T getOrCreate(String key, P createParams) throws IOException {
+    public @NonNull T getOrCreate(String key, P createParams) throws IOException {
         return get(key,true,createParams);
     }
 
@@ -126,7 +126,7 @@ public abstract class KeyedDataStorage<T,P> {
      * @return Item with the specified {@code key}
      * @throws IOException Loading error
      */
-    protected @CheckForNull T get(@Nonnull String key, boolean createIfNotExist, P createParams) throws IOException {
+    protected @CheckForNull T get(@NonNull String key, boolean createIfNotExist, P createParams) throws IOException {
         while(true) {
             totalQuery.incrementAndGet();
             Object value = core.get(key);
@@ -149,7 +149,7 @@ public abstract class KeyedDataStorage<T,P> {
 
             // the fingerprint doesn't seem to be loaded thus far, so let's load it now.
             // the care needs to be taken that other threads might be trying to do the same.
-            Loading<T> l = new Loading<T>();
+            Loading<T> l = new Loading<>();
             if(value==null ? core.putIfAbsent(key,l)!=null : !core.replace(key,value,l)) {
                 // the value has changed since then. another thread is attempting to do the same.
                 // go back to square 1 and try it again.
@@ -175,7 +175,7 @@ public abstract class KeyedDataStorage<T,P> {
 
             // the map needs to be updated to reflect the result of loading
             if(t!=null)
-                core.put(key,new SoftReference<T>(t));
+                core.put(key, new SoftReference<>(t));
             else
                 core.remove(key);
 
@@ -219,7 +219,7 @@ public abstract class KeyedDataStorage<T,P> {
      *      {@link IOException} (or any other exception) and that will be
      *      propagated to the caller.
      */
-    protected abstract @Nonnull T create(@Nonnull String key, @Nonnull P createParams) throws IOException;
+    protected abstract @NonNull T create(@NonNull String key, @NonNull P createParams) throws IOException;
 
     public void resetPerformanceStats() {
         totalQuery.set(0);
@@ -254,7 +254,7 @@ public abstract class KeyedDataStorage<T,P> {
      * Among cache misses, number of times when we had {@link SoftReference}
      * but lost its value due to GC.
      *
-     * <tt>totalQuery-cacheHit-weakRefLost</tt> means cache miss.
+     * {@code totalQuery-cacheHit-weakRefLost} means cache miss.
      */
     public final AtomicInteger weakRefLost = new AtomicInteger();
     /**

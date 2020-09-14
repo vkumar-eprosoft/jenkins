@@ -27,16 +27,25 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.fail;
 
+import com.gargoylesoftware.htmlunit.html.HtmlPage;
 import hudson.model.FreeStyleProject;
 import hudson.model.ListView;
 
+import java.io.IOException;
+import java.net.HttpURLConnection;
 import java.net.URL;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
+import hudson.model.User;
+import hudson.model.View;
+import hudson.security.ACL;
+import hudson.security.ACLContext;
+import hudson.security.GlobalMatrixAuthorizationStrategy;
+import jenkins.model.Jenkins;
 import net.sf.json.JSONArray;
 import net.sf.json.JSONObject;
 import net.sf.json.JSONSerializer;
@@ -46,10 +55,9 @@ import org.junit.Test;
 import org.jvnet.hudson.test.Issue;
 import org.jvnet.hudson.test.JenkinsRule;
 import org.jvnet.hudson.test.JenkinsRule.WebClient;
+import org.jvnet.hudson.test.MockAuthorizationStrategy;
 import org.jvnet.hudson.test.MockFolder;
 
-import com.gargoylesoftware.htmlunit.AlertHandler;
-import com.gargoylesoftware.htmlunit.FailingHttpStatusCodeException;
 import com.gargoylesoftware.htmlunit.Page;
 
 /**
@@ -64,12 +72,10 @@ public class SearchTest {
      */
     @Test
     public void testFailure() throws Exception {
-        try {
-            j.search("no-such-thing");
-            fail("404 expected");
-        } catch (FailingHttpStatusCodeException e) {
-            assertEquals(404,e.getResponse().getStatusCode());
-        }
+        WebClient wc = j.createWebClient()
+                .withThrowExceptionOnFailingStatusCode(false);
+        HtmlPage resultPage = wc.search("no-such-thing");
+        assertEquals(HttpURLConnection.HTTP_NOT_FOUND, resultPage.getWebResponse().getStatusCode());
     }
 
     /**
@@ -78,18 +84,13 @@ public class SearchTest {
     @Issue("JENKINS-3415")
     @Test
     public void testXSS() throws Exception {
-        try {
-            WebClient wc = j.createWebClient();
-            wc.setAlertHandler(new AlertHandler() {
-                public void handleAlert(Page page, String message) {
-                    throw new AssertionError();
-                }
-            });
-            wc.search("<script>alert('script');</script>");
-            fail("404 expected");
-        } catch (FailingHttpStatusCodeException e) {
-            assertEquals(404,e.getResponse().getStatusCode());
-        }
+        WebClient wc = j.createWebClient()
+                .withThrowExceptionOnFailingStatusCode(false);
+        wc.setAlertHandler((page, message) -> {
+            throw new AssertionError();
+        });
+        HtmlPage resultPage = wc.search("<script>alert('script');</script>");
+        assertEquals(HttpURLConnection.HTTP_NOT_FOUND, resultPage.getWebResponse().getStatusCode());
     }
     
     @Test
@@ -241,7 +242,7 @@ public class SearchTest {
         assertEquals(2, jsonArray.size());
         
         boolean foundProjectName = false;
-        boolean foundDispayName = false;
+        boolean foundDisplayName = false;
         for(Object suggestion : jsonArray) {
             JSONObject jsonSuggestion = (JSONObject)suggestion;
             
@@ -250,12 +251,12 @@ public class SearchTest {
                 foundProjectName = true;
             }
             else if(displayName.equals(name)) {
-                foundDispayName = true;
+                foundDisplayName = true;
             }
         }
 
         assertTrue(foundProjectName);
-        assertTrue(foundDispayName);
+        assertTrue(foundDisplayName);
     }
 
     @Issue("JENKINS-24433")
@@ -378,6 +379,37 @@ public class SearchTest {
 
         assertTrue(suggest(j.jenkins.getSearchIndex(),"foo").contains(p));
     }
+
+    @Issue("SECURITY-385")
+    @Test
+    public void testInaccessibleViews() throws IOException {
+        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
+        GlobalMatrixAuthorizationStrategy strategy = new GlobalMatrixAuthorizationStrategy();
+        strategy.add(Jenkins.READ, "alice");
+        j.jenkins.setAuthorizationStrategy(strategy);
+
+        j.jenkins.addView(new ListView("foo", j.jenkins));
+
+        // SYSTEM can see all the views
+        assertEquals("two views exist", 2, Jenkins.get().getViews().size());
+        List<SearchItem> results = new ArrayList<>();
+        j.jenkins.getSearchIndex().suggest("foo", results);
+        assertEquals("nonempty results list", 1, results.size());
+
+
+        // Alice can't
+        assertFalse("no permission", j.jenkins.getView("foo").hasPermission(User.get("alice").impersonate(), View.READ));
+        ACL.impersonate(User.get("alice").impersonate(), new Runnable() {
+            @Override
+            public void run() {
+                assertEquals("no visible views", 0, Jenkins.get().getViews().size());
+
+                List<SearchItem> results = new ArrayList<>();
+                j.jenkins.getSearchIndex().suggest("foo", results);
+                assertEquals("empty results list", Collections.emptyList(), results);
+            }
+        });
+    }
     
     @Test
     public void testSearchWithinFolders() throws Exception {
@@ -390,9 +422,66 @@ public class SearchTest {
         assertTrue(suggest.contains(p2));
     }
 
+
+    @Test
+    @Issue("JENKINS-7874")
+    public void adminOnlyLinksNotShownToRegularUser() {
+        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
+        MockAuthorizationStrategy mas = new MockAuthorizationStrategy();
+        mas.grant(Jenkins.READ).onRoot().toEveryone();
+        j.jenkins.setAuthorizationStrategy(mas);
+
+        try(ACLContext acl = ACL.as(User.get("alice"))) {
+            List<SearchItem> results = new ArrayList<>();
+            j.jenkins.getSearchIndex().find("config", results);
+            j.jenkins.getSearchIndex().find("manage", results);
+            j.jenkins.getSearchIndex().find("log", results);
+            assertEquals("empty results list", 0, results.size());
+        }
+    }
+
     private List<SearchItem> suggest(SearchIndex index, String term) {
         List<SearchItem> result = new ArrayList<SearchItem>();
         index.suggest(term, result);
         return result;
+    }
+
+    @Issue("JENKINS-35459")
+    @Test
+    public void testProjectNameInAListView() throws Exception {
+        MockFolder myMockFolder = j.createFolder("folder");
+        FreeStyleProject freeStyleProject = myMockFolder.createProject(FreeStyleProject.class, "myJob");
+
+        ListView listView = new ListView("ListView", j.jenkins);
+        listView.setRecurse(true);
+        listView.add(myMockFolder);
+        listView.add(freeStyleProject);
+
+        j.jenkins.addView(listView);
+        j.jenkins.setPrimaryView(listView);
+
+        assertEquals(2, j.jenkins.getPrimaryView().getAllItems().size());
+
+        WebClient wc = j.createWebClient();
+        Page result = wc.goTo("search/suggest?query=" + freeStyleProject.getName(), "application/json");
+
+        assertNotNull(result);
+        j.assertGoodStatus(result);
+
+        String content = result.getWebResponse().getContentAsString();
+        JSONObject jsonContent = (JSONObject)JSONSerializer.toJSON(content);
+        assertNotNull(jsonContent);
+        JSONArray jsonArray = jsonContent.getJSONArray("suggestions");
+        assertNotNull(jsonArray);
+
+        assertEquals(2, jsonArray.size());
+
+        Page searchResult = wc.goTo("search?q=" + myMockFolder.getName() + "%2F" + freeStyleProject.getName());
+
+        assertNotNull(searchResult);
+        j.assertGoodStatus(searchResult);
+
+        URL resultUrl = searchResult.getUrl();
+        assertTrue(resultUrl.toString().equals(j.getInstance().getRootUrl() + freeStyleProject.getUrl()));
     }
 }

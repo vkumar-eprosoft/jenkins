@@ -24,20 +24,19 @@
 
 package hudson.cli;
 
-import hudson.FilePath;
+import hudson.Functions;
 import hudson.model.FreeStyleBuild;
 import hudson.model.FreeStyleProject;
 import hudson.model.Job;
 import hudson.model.Run;
+import hudson.tasks.BatchFile;
+import hudson.tasks.Builder;
 import hudson.tasks.Shell;
 import jenkins.model.Jenkins;
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.jvnet.hudson.test.JenkinsRule;
-
-import java.io.File;
 
 import static hudson.cli.CLICommandInvoker.Matcher.failedWith;
 import static hudson.cli.CLICommandInvoker.Matcher.hasNoStandardOutput;
@@ -61,7 +60,7 @@ public class SetBuildDescriptionCommandTest {
 
     @Test public void setBuildDescriptionShouldFailWithoutJobReadPermission() throws Exception {
         FreeStyleProject project = j.createFreeStyleProject("aProject");
-        project.getBuildersList().add(new Shell("echo 1"));
+        project.getBuildersList().add(createScriptBuilder("echo 1"));
         assertThat(project.scheduleBuild2(0).get().getLog(), containsString("echo 1"));
 
         final CLICommandInvoker.Result result = command
@@ -74,7 +73,7 @@ public class SetBuildDescriptionCommandTest {
 
     @Test public void setBuildDescriptionShouldFailWithoutRunUpdatePermission1() throws Exception {
         FreeStyleProject project = j.createFreeStyleProject("aProject");
-        project.getBuildersList().add(new Shell("echo 1"));
+        project.getBuildersList().add(createScriptBuilder("echo 1"));
         assertThat(project.scheduleBuild2(0).get().getLog(), containsString("echo 1"));
 
         final CLICommandInvoker.Result result = command
@@ -87,7 +86,7 @@ public class SetBuildDescriptionCommandTest {
 
     @Test public void setBuildDescriptionShouldSucceed() throws Exception {
         FreeStyleProject project = j.createFreeStyleProject("aProject");
-        project.getBuildersList().add(new Shell("echo 1"));
+        project.getBuildersList().add(createScriptBuilder("echo 1"));
         FreeStyleBuild build = project.scheduleBuild2(0).get();
         assertThat(build.getLog(), containsString("echo 1"));
         assertThat(build.getDescription(), equalTo(null));
@@ -133,7 +132,7 @@ public class SetBuildDescriptionCommandTest {
 
     @Test public void setBuildDescriptionShouldFailIfBuildDoesNotExist() throws Exception {
         FreeStyleProject project = j.createFreeStyleProject("aProject");
-        project.getBuildersList().add(new Shell("echo 1"));
+        project.getBuildersList().add(createScriptBuilder("echo 1"));
         assertThat(project.scheduleBuild2(0).get().getLog(), containsString("echo 1"));
 
         final CLICommandInvoker.Result result = command
@@ -143,6 +142,16 @@ public class SetBuildDescriptionCommandTest {
         assertThat(result, failedWith(3));
         assertThat(result, hasNoStandardOutput());
         assertThat(result.stderr(), containsString("ERROR: No such build #2"));
+    }
+
+    //TODO: determine if this should be pulled out into JenkinsRule or something
+    /**
+     * Create a script based builder (either Shell or BatchFile) depending on platform
+     * @param script the contents of the script to run
+     * @return A Builder instance of either Shell or BatchFile
+     */
+    private Builder createScriptBuilder(String script) {
+        return Functions.isWindows() ? new BatchFile(script) : new Shell(script);
     }
 
 }

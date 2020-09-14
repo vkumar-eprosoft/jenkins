@@ -23,10 +23,14 @@
  */
 package hudson;
 
+import hudson.security.ACLContext;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
+import java.nio.file.StandardOpenOption;
 import jenkins.util.SystemProperties;
 import com.thoughtworks.xstream.converters.reflection.PureJavaReflectionProvider;
 import com.thoughtworks.xstream.core.JVM;
-import com.trilead.ssh2.util.IOUtils;
 import hudson.model.Hudson;
 import hudson.security.ACL;
 import hudson.util.BootFailure;
@@ -44,6 +48,8 @@ import hudson.util.ChartUtil;
 import hudson.util.AWTProblem;
 import jenkins.util.JenkinsJVM;
 import org.jvnet.localizer.LocaleProvider;
+import org.kohsuke.accmod.Restricted;
+import org.kohsuke.accmod.restrictions.NoExternalUse;
 import org.kohsuke.stapler.jelly.JellyFacet;
 import org.apache.tools.ant.types.FileSet;
 
@@ -54,19 +60,22 @@ import javax.servlet.ServletContext;
 import javax.servlet.ServletContextEvent;
 import javax.servlet.ServletContextListener;
 import javax.servlet.ServletResponse;
+import javax.servlet.SessionTrackingMode;
 import javax.xml.transform.TransformerFactory;
 import javax.xml.transform.TransformerFactoryConfigurationError;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
-import java.lang.reflect.Method;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.Date;
+import java.util.EnumSet;
 import java.util.Locale;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.security.Security;
+import java.util.logging.ConsoleHandler;
+import java.util.logging.Formatter;
+import java.util.logging.Handler;
 import java.util.logging.LogRecord;
 
 import static java.util.logging.Level.*;
@@ -77,7 +86,33 @@ import static java.util.logging.Level.*;
  * @author Kohsuke Kawaguchi
  */
 public class WebAppMain implements ServletContextListener {
-    private final RingBufferLogHandler handler = new RingBufferLogHandler() {
+
+    // use RingBufferLogHandler class name to configure for backward compatibility
+    private static final int DEFAULT_RING_BUFFER_SIZE = SystemProperties.getInteger(RingBufferLogHandler.class.getName() + ".defaultSize", 256);
+
+    /**
+     * System property name to force the session tracking by cookie.
+     * This prevents Tomcat to use the URL tracking in addition to the cookie by default.
+     * This could be useful for instances that requires to have
+     * the {@link jenkins.security.SuspiciousRequestFilter#allowSemicolonsInPath} turned off.
+     * <p>
+     * If you allow semicolon in URL and the session to be tracked by URL and you have
+     * a SecurityRealm that does not invalidate session after authentication,
+     * your instance is vulnerable to session hijacking.
+     * <p>
+     * The SecurityRealm should be corrected but this is a hardening in Jenkins core.
+     * <p>
+     * As this property is read during startup, you will not be able to change it at runtime 
+     * depending on your application server (not possible with Jetty nor Tomcat)
+     * <p>
+     * When running hpi:run, the default tracking is COOKIE+URL.
+     * When running java -jar with Winstone/Jetty, the default setting is set to COOKIE only.
+     * When running inside Tomcat, the default setting is COOKIE+URL.
+     */
+    @Restricted(NoExternalUse.class)
+    public static final String FORCE_SESSION_TRACKING_BY_COOKIE_PROP = WebAppMain.class.getName() + ".forceSessionTrackingByCookie";
+
+    private final RingBufferLogHandler handler = new RingBufferLogHandler(DEFAULT_RING_BUFFER_SIZE) {
         @Override public synchronized void publish(LogRecord record) {
             if (record.getLevel().intValue() >= Level.INFO.intValue()) {
                 super.publish(record);
@@ -91,7 +126,24 @@ public class WebAppMain implements ServletContextListener {
     /**
      * Creates the sole instance of {@link jenkins.model.Jenkins} and register it to the {@link ServletContext}.
      */
+    @Override
     public void contextInitialized(ServletContextEvent event) {
+        // Nicer console log formatting when using mvn jetty:run.
+        if (Main.isDevelopmentMode && System.getProperty("java.util.logging.config.file") == null) {
+            try {
+                Formatter formatter = (Formatter) Class.forName("io.jenkins.lib.support_log_formatter.SupportLogFormatter").newInstance();
+                for (Handler h : java.util.logging.Logger.getLogger("").getHandlers()) {
+                    if (h instanceof ConsoleHandler) {
+                        ((ConsoleHandler) h).setFormatter(formatter);
+                    }
+                }
+            } catch (ClassNotFoundException x) {
+                // ignore
+            } catch (Exception x) {
+                LOGGER.log(Level.WARNING, null, x);
+            }
+        }
+
         JenkinsJVMAccess._setJenkinsJVM(true);
         final ServletContext context = event.getServletContext();
         File home=null;
@@ -124,7 +176,7 @@ public class WebAppMain implements ServletContextListener {
             final FileAndDescription describedHomeDir = getHomeDir(event);
             home = describedHomeDir.file.getAbsoluteFile();
             home.mkdirs();
-            System.out.println("Jenkins home directory: "+home+" found at: "+describedHomeDir.description);
+            LOGGER.info("Jenkins home directory: "+ home +" found at: " + describedHomeDir.description);
 
             // check that home exists (as mkdirs could have failed silently), otherwise throw a meaningful error
             if (!home.exists())
@@ -217,6 +269,9 @@ public class WebAppMain implements ServletContextListener {
             installExpressionFactory(event);
 
             context.setAttribute(APP,new HudsonIsLoading());
+            if (SystemProperties.getBoolean(FORCE_SESSION_TRACKING_BY_COOKIE_PROP, true)) {
+                context.setSessionTrackingModes(EnumSet.of(SessionTrackingMode.COOKIE));
+            }
 
             final File _home = home;
             initThread = new Thread("Jenkins initialization thread") {
@@ -269,14 +324,10 @@ public class WebAppMain implements ServletContextListener {
      * @see BootFailure
      */
     private void recordBootAttempt(File home) {
-        FileOutputStream o=null;
-        try {
-            o = new FileOutputStream(BootFailure.getBootFailureFile(home), true);
-            o.write((new Date().toString() + System.getProperty("line.separator", "\n")).toString().getBytes());
-        } catch (IOException e) {
+        try (OutputStream o=Files.newOutputStream(BootFailure.getBootFailureFile(home).toPath(), StandardOpenOption.CREATE, StandardOpenOption.APPEND)) {
+            o.write((new Date().toString() + System.getProperty("line.separator", "\n")).getBytes());
+        } catch (IOException | InvalidPathException e) {
             LOGGER.log(WARNING, "Failed to record boot attempts",e);
-        } finally {
-            IOUtils.closeQuietly(o);
         }
     }
 
@@ -287,7 +338,7 @@ public class WebAppMain implements ServletContextListener {
 	/**
      * Installs log handler to monitor all Hudson logs.
      */
-    @edu.umd.cs.findbugs.annotations.SuppressWarnings("LG_LOST_LOGGER_DUE_TO_WEAK_REFERENCE")
+    @edu.umd.cs.findbugs.annotations.SuppressFBWarnings("LG_LOST_LOGGER_DUE_TO_WEAK_REFERENCE")
     private void installLogger() {
         Jenkins.logRecords = handler.getView();
         Logger.getLogger("").addHandler(handler);
@@ -370,25 +421,26 @@ public class WebAppMain implements ServletContextListener {
     }
 
     public void contextDestroyed(ServletContextEvent event) {
-        try {
-            ACL.impersonate(ACL.SYSTEM, new Runnable() {
-                @Override
-                public void run() {
-                    terminated = true;
-                    Jenkins instance = Jenkins.getInstanceOrNull();
-                    if (instance != null)
-                        instance.cleanUp();
-                    Thread t = initThread;
-                    if (t != null && t.isAlive()) {
-                        LOGGER.log(Level.INFO, "Shutting down a Jenkins instance that was still starting up", new Throwable("reason"));
-                        t.interrupt();
-                    }
-
-                    // Logger is in the system classloader, so if we don't do this
-                    // the whole web app will never be undepoyed.
-                    Logger.getLogger("").removeHandler(handler);
+        try (ACLContext old = ACL.as(ACL.SYSTEM)) {
+            Jenkins instance = Jenkins.getInstanceOrNull();
+            try {
+                if (instance != null) {
+                    instance.cleanUp();
                 }
-            });
+            } catch (Exception e) {
+                LOGGER.log(Level.SEVERE, "Failed to clean up. Restart will continue.", e);
+            }
+
+            terminated = true;
+            Thread t = initThread;
+            if (t != null && t.isAlive()) {
+                LOGGER.log(Level.INFO, "Shutting down a Jenkins instance that was still starting up", new Throwable("reason"));
+                t.interrupt();
+            }
+
+            // Logger is in the system classloader, so if we don't do this
+            // the whole web app will never be undeployed.
+            Logger.getLogger("").removeHandler(handler);
         } finally {
             JenkinsJVMAccess._setJenkinsJVM(false);
         }

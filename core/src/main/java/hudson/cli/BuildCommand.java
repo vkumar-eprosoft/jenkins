@@ -25,8 +25,6 @@ package hudson.cli;
 
 import hudson.Util;
 import hudson.console.ModelHyperlinkNote;
-import hudson.model.AbstractBuild;
-import hudson.model.AbstractProject;
 import hudson.model.Cause.UserIdCause;
 import hudson.model.CauseAction;
 import hudson.model.Job;
@@ -42,10 +40,11 @@ import hudson.model.Item;
 import hudson.model.TaskListener;
 import hudson.model.User;
 import hudson.model.queue.QueueTaskFuture;
-import hudson.scm.PollingResult.Change;
 import hudson.util.EditDistance;
 import hudson.util.StreamTaskListener;
 
+import java.nio.file.NoSuchFileException;
+import jenkins.scm.SCMDecisionHandler;
 import org.kohsuke.args4j.Argument;
 import org.kohsuke.args4j.CmdLineException;
 import org.kohsuke.args4j.Option;
@@ -90,7 +89,7 @@ public class BuildCommand extends CLICommand {
     public boolean checkSCM = false;
 
     @Option(name="-p",usage="Specify the build parameters in the key=value format.")
-    public Map<String,String> parameters = new HashMap<String, String>();
+    public Map<String,String> parameters = new HashMap<>();
 
     @Option(name="-v",usage="Prints out the console output of the build. Use with -s")
     public boolean consoleOutput = false;
@@ -110,7 +109,7 @@ public class BuildCommand extends CLICommand {
                 throw new IllegalStateException(job.getFullDisplayName()+" is not parameterized but the -p option was specified.");
 
             //TODO: switch to type annotations after the migration to Java 1.8
-            List<ParameterValue> values = new ArrayList<ParameterValue>();
+            List<ParameterValue> values = new ArrayList<>();
 
             for (Entry<String, String> e : parameters.entrySet()) {
                 String name = e.getKey();
@@ -148,13 +147,17 @@ public class BuildCommand extends CLICommand {
             SCMTriggerItem item = SCMTriggerItem.SCMTriggerItems.asSCMTriggerItem(job);
             if (item == null)
                 throw new AbortException(job.getFullDisplayName()+" has no SCM trigger, but checkSCM was specified");
+            // preemptively check for a polling veto
+            if (SCMDecisionHandler.firstShouldPollVeto(job) != null) {
+                return 0;
+            }
             if (!item.poll(new StreamTaskListener(stdout, getClientCharset())).hasChanges())
                 return 0;
         }
 
         if (!job.isBuildable()) {
             String msg = Messages.BuildCommand_CLICause_CannotBuildUnknownReasons(job.getFullDisplayName());
-            if (job instanceof AbstractProject<?, ?> && ((AbstractProject<?, ?>)job).isDisabled()) {
+            if (job instanceof ParameterizedJobMixIn.ParameterizedJob && ((ParameterizedJobMixIn.ParameterizedJob) job).isDisabled()) {
                 msg = Messages.BuildCommand_CLICause_CannotBuildDisabled(job.getFullDisplayName());
             } else if (job.isHoldOffBuildUntilSave()){
                 msg = Messages.BuildCommand_CLICause_CannotBuildConfigNotSaved(job.getFullDisplayName());
@@ -186,7 +189,7 @@ public class BuildCommand extends CLICommand {
                                 b.writeWholeLogTo(stdout);
                                 break;
                             }
-                            catch (FileNotFoundException e) {
+                            catch (FileNotFoundException | NoSuchFileException e) {
                                 if ( i == retryCnt ) {
                                     Exception myException = new AbortException();
                                     myException.initCause(e);

@@ -31,16 +31,17 @@ import org.kohsuke.args4j.Argument;
 
 import java.util.HashSet;
 import java.util.List;
-import java.util.logging.Logger;
 
 /**
+ * CLI command, which deletes Jenkins nodes.
  * @author pjanouse
- * @since TODO
+ * @since 1.618
  */
 @Extension
 public class DeleteNodeCommand extends CLICommand {
 
-    @Argument(usage="Nodes name to delete", required=true, multiValued=true)
+    @SuppressWarnings("MismatchedQueryAndUpdateOfCollection")
+    @Argument(usage="Names of nodes to delete", required=true, multiValued=true)
     private List<String> nodes;
 
     @Override
@@ -53,13 +54,12 @@ public class DeleteNodeCommand extends CLICommand {
     protected int run() throws Exception {
 
         boolean errorOccurred = false;
-        final Jenkins jenkins = Jenkins.getActiveInstance();
+        final Jenkins jenkins = Jenkins.get();
 
-        final HashSet<String> hs = new HashSet<String>();
-        hs.addAll(nodes);
+        final HashSet<String> hs = new HashSet<>(nodes);
 
         for (String node_s : hs) {
-            Node node = null;
+            Node node;
 
             try {
                 node = jenkins.getNode(node_s);
@@ -74,7 +74,7 @@ public class DeleteNodeCommand extends CLICommand {
                     throw e;
                 }
 
-                final String errorMsg = String.format(node_s + ": " + e.getMessage());
+                final String errorMsg = node_s + ": " + e.getMessage();
                 stderr.println(errorMsg);
                 errorOccurred = true;
                 continue;
@@ -82,7 +82,7 @@ public class DeleteNodeCommand extends CLICommand {
         }
 
         if (errorOccurred) {
-            throw new AbortException("Error occured while performing this command, see previous stderr output.");
+            throw new AbortException(CLI_LISTPARAM_SUMMARY_ERROR_TEXT);
         }
         return 0;
     }

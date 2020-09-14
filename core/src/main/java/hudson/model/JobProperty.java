@@ -42,7 +42,7 @@ import net.sf.json.JSONObject;
 import org.kohsuke.stapler.StaplerRequest;
 import org.kohsuke.stapler.export.ExportedBean;
 
-import javax.annotation.Nonnull;
+import edu.umd.cs.findbugs.annotations.NonNull;
 
 /**
  * Extensible property of {@link Job}.
@@ -53,9 +53,9 @@ import javax.annotation.Nonnull;
  * configuration screen, and they are persisted with the job object.
  *
  * <p>
- * Configuration screen should be defined in <tt>config.jelly</tt>.
+ * Configuration screen should be defined in {@code config.jelly}.
  * Within this page, the {@link JobProperty} instance is available
- * as <tt>instance</tt> variable (while <tt>it</tt> refers to {@link Job}.
+ * as {@code instance} variable (while {@code it} refers to {@link Job}.
  *
  * <p>
  * Starting 1.150, {@link JobProperty} implements {@link BuildStep},
@@ -97,12 +97,9 @@ public abstract class JobProperty<J extends Job<?,?>> implements ReconfigurableD
         this.owner = owner;
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
     public JobPropertyDescriptor getDescriptor() {
-        return (JobPropertyDescriptor) Jenkins.getInstance().getDescriptorOrDie(getClass());
+        return (JobPropertyDescriptor) Jenkins.get().getDescriptorOrDie(getClass());
     }
 
     /**
@@ -134,7 +131,7 @@ public abstract class JobProperty<J extends Job<?,?>> implements ReconfigurableD
      * @see ProminentProjectAction
      * @see PermalinkProjectAction
      */
-    @Nonnull
+    @NonNull
     public Collection<? extends Action> getJobActions(J job) {
         // delegate to getJobAction (singular) for backward compatible behavior
         Action a = getJobAction(job);
@@ -173,7 +170,7 @@ public abstract class JobProperty<J extends Job<?,?>> implements ReconfigurableD
         return getJobAction((J)project);
     }
 
-    @Nonnull
+    @NonNull
     public final Collection<? extends Action> getProjectActions(AbstractProject<?,?> project) {
         return getJobActions((J)project);
     }

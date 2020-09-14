@@ -27,7 +27,9 @@ import hudson.model.Hudson;
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
-import javax.annotation.Nonnull;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+import edu.umd.cs.findbugs.annotations.NonNull;
 
 /**
  * Pluggability point for how to create {@link PluginWrapper}.
@@ -54,7 +56,7 @@ public interface PluginStrategy extends ExtensionPoint {
      * Needed by {@link PluginManager#dynamicLoad} to decide whether such a plugin is already installed.
      * @return the {@link PluginWrapper#getShortName}
      */
-    @Nonnull String getShortName(File archive) throws IOException;
+    @NonNull String getShortName(File archive) throws IOException;
 
 	/**
 	 * Loads the plugin and starts it.
@@ -92,5 +94,8 @@ public interface PluginStrategy extends ExtensionPoint {
      * @param dependee newly loaded plugin.
      * @since 1.557
      */
-    void updateDependency(PluginWrapper depender, PluginWrapper dependee);
+    // TODO an @Abstract annotation with a matching processor could make it a compile-time error to neglect to override this, without breaking binary compatibility
+    default void updateDependency(PluginWrapper depender, PluginWrapper dependee) {
+        Logger.getLogger(PluginStrategy.class.getName()).log(Level.WARNING, "{0} does not yet implement updateDependency", getClass());
+    }
 }

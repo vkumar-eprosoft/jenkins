@@ -23,39 +23,27 @@
  */
 package hudson;
 
-import jenkins.util.SystemProperties;
-import com.sun.jna.Memory;
-import com.sun.jna.Native;
-import com.sun.jna.NativeLong;
-
-import edu.umd.cs.findbugs.annotations.SuppressWarnings;
-import hudson.Proc.LocalProc;
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import hudson.model.TaskListener;
-import hudson.os.PosixAPI;
+import jenkins.util.MemoryReductionUtil;
 import hudson.util.QuotedStringTokenizer;
 import hudson.util.VariableResolver;
-import hudson.util.jna.WinIOException;
+import jenkins.util.SystemProperties;
 
+import jenkins.util.io.PathRemover;
+import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.io.IOUtils;
+import org.apache.commons.io.output.NullOutputStream;
 import org.apache.commons.lang.time.FastDateFormat;
 import org.apache.tools.ant.BuildException;
 import org.apache.tools.ant.Project;
-import org.apache.tools.ant.taskdefs.Chmod;
 import org.apache.tools.ant.taskdefs.Copy;
 import org.apache.tools.ant.types.FileSet;
 
 import org.kohsuke.accmod.Restricted;
 import org.kohsuke.accmod.restrictions.NoExternalUse;
 
-import jnr.posix.FileStat;
-import jnr.posix.POSIX;
-
-import javax.crypto.SecretKey;
-import javax.crypto.spec.SecretKeySpec;
-
 import java.io.*;
-import java.lang.reflect.Array;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.net.InetAddress;
@@ -67,36 +55,45 @@ import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
 import java.nio.charset.CharsetEncoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.FileSystemException;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
-import java.nio.file.NotLinkException;
+import java.nio.file.InvalidPathException;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.DosFileAttributes;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.security.DigestInputStream;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.text.NumberFormat;
 import java.text.ParseException;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
+import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import hudson.util.jna.Kernel32Utils;
-import static hudson.util.jna.GNUCLibrary.LIBC;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import edu.umd.cs.findbugs.annotations.CheckReturnValue;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.Nullable;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
 
-import java.security.DigestInputStream;
-
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
-
-import org.apache.commons.codec.digest.DigestUtils;
-import org.kohsuke.accmod.Restricted;
-import org.kohsuke.accmod.restrictions.NoExternalUse;
+import org.apache.commons.io.FileUtils;
+import org.kohsuke.stapler.StaplerRequest;
 
 /**
  * Various utility methods that don't have more proper home.
@@ -117,9 +114,9 @@ public class Util {
      * Creates a filtered sublist.
      * @since 1.176
      */
-    @Nonnull
-    public static <T> List<T> filter( @Nonnull Iterable<?> base, @Nonnull Class<T> type ) {
-        List<T> r = new ArrayList<T>();
+    @NonNull
+    public static <T> List<T> filter( @NonNull Iterable<?> base, @NonNull Class<T> type ) {
+        List<T> r = new ArrayList<>();
         for (Object i : base) {
             if(type.isInstance(i))
                 r.add(type.cast(i));
@@ -130,8 +127,8 @@ public class Util {
     /**
      * Creates a filtered sublist.
      */
-    @Nonnull
-    public static <T> List<T> filter( @Nonnull List<?> base, @Nonnull Class<T> type ) {
+    @NonNull
+    public static <T> List<T> filter( @NonNull List<?> base, @NonNull Class<T> type ) {
         return filter((Iterable)base,type);
     }
 
@@ -141,25 +138,25 @@ public class Util {
     private static final Pattern VARIABLE = Pattern.compile("\\$([A-Za-z0-9_]+|\\{[A-Za-z0-9_.]+\\}|\\$)");
 
     /**
-     * Replaces the occurrence of '$key' by <tt>properties.get('key')</tt>.
+     * Replaces the occurrence of '$key' by {@code properties.get('key')}.
      *
      * <p>
      * Unlike shell, undefined variables are left as-is (this behavior is the same as Ant.)
      *
      */
     @Nullable
-    public static String replaceMacro( @CheckForNull String s, @Nonnull Map<String,String> properties) {
-        return replaceMacro(s,new VariableResolver.ByMap<String>(properties));
+    public static String replaceMacro( @CheckForNull String s, @NonNull Map<String,String> properties) {
+        return replaceMacro(s, new VariableResolver.ByMap<>(properties));
     }
 
     /**
-     * Replaces the occurrence of '$key' by <tt>resolver.get('key')</tt>.
+     * Replaces the occurrence of '$key' by {@code resolver.get('key')}.
      *
      * <p>
      * Unlike shell, undefined variables are left as-is (this behavior is the same as Ant.)
      */
     @Nullable
-    public static String replaceMacro(@CheckForNull String s, @Nonnull VariableResolver<String> resolver) {
+    public static String replaceMacro(@CheckForNull String s, @NonNull VariableResolver<String> resolver) {
     	if (s == null) {
     		return null;
     	}
@@ -190,31 +187,54 @@ public class Util {
     }
 
     /**
-     * Loads the contents of a file into a string.
+     * Reads the entire contents of the text file at {@code logfile} into a
+     * string using the {@link Charset#defaultCharset() default charset} for
+     * decoding. If no such file exists, an empty string is returned.
+     * @param logfile The text file to read in its entirety.
+     * @return The entire text content of {@code logfile}.
+     * @throws IOException If an error occurs while reading the file.
+     * @deprecated call {@link #loadFile(java.io.File, java.nio.charset.Charset)}
+     * instead to specify the charset to use for decoding (preferably
+     * {@link java.nio.charset.StandardCharsets#UTF_8}).
      */
-    @Nonnull
-    public static String loadFile(@Nonnull File logfile) throws IOException {
+    @NonNull
+    @Deprecated
+    public static String loadFile(@NonNull File logfile) throws IOException {
         return loadFile(logfile, Charset.defaultCharset());
     }
 
-    @Nonnull
-    public static String loadFile(@Nonnull File logfile, @Nonnull Charset charset) throws IOException {
-        if(!logfile.exists())
-            return "";
-
-        StringBuilder str = new StringBuilder((int)logfile.length());
-
-        BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(logfile),charset));
+    /**
+     * Reads the entire contents of the text file at {@code logfile} into a
+     * string using {@code charset} for decoding. If no such file exists,
+     * an empty string is returned.
+     * @param logfile The text file to read in its entirety.
+     * @param charset The charset to use for decoding the bytes in {@code logfile}.
+     * @return The entire text content of {@code logfile}.
+     * @throws IOException If an error occurs while reading the file.
+     */
+    @NonNull
+    public static String loadFile(@NonNull File logfile, @NonNull Charset charset) throws IOException {
+        // Note: Until charset handling is resolved (e.g. by implementing
+        // https://issues.jenkins-ci.org/browse/JENKINS-48923 ), this method
+        // must be able to handle character encoding errors. As reported at
+        // https://issues.jenkins-ci.org/browse/JENKINS-49112 Run.getLog() calls
+        // loadFile() to fully read the generated log file. This file might
+        // contain unmappable and/or malformed byte sequences. We need to make
+        // sure that in such cases, no CharacterCodingException is thrown.
+        //
+        // One approach that cannot be used is to call Files.newBufferedReader()
+        // because there is a difference in how an InputStreamReader constructed
+        // from a Charset and the reader returned by Files.newBufferedReader()
+        // handle malformed and unmappable byte sequences for the specified
+        // encoding; the latter is more picky and will throw an exception.
+        // See: https://issues.jenkins-ci.org/browse/JENKINS-49060?focusedCommentId=325989&page=com.atlassian.jira.plugin.system.issuetabpanels:comment-tabpanel#comment-325989
         try {
-            char[] buf = new char[1024];
-            int len;
-            while((len=r.read(buf,0,buf.length))>0)
-               str.append(buf,0,len);
-        } finally {
-            r.close();
+            return FileUtils.readFileToString(logfile, charset);
+        } catch (FileNotFoundException e) {
+            return "";
+        } catch (Exception e) {
+            throw new IOException("Failed to fully read " + logfile, e);
         }
-
-        return str.toString();
     }
 
     /**
@@ -226,17 +246,19 @@ public class Util {
      * @throws IOException
      *      if the operation fails.
      */
-    public static void deleteContentsRecursive(@Nonnull File file) throws IOException {
-        for( int numberOfAttempts=1 ; ; numberOfAttempts++ ) {
-            try {
-                tryOnceDeleteContentsRecursive(file);
-                break; // success
-            } catch (IOException ex) {
-                boolean threadWasInterrupted = pauseBetweenDeletes(numberOfAttempts);
-                if( numberOfAttempts>= DELETION_MAX || threadWasInterrupted)
-                    throw new IOException(deleteFailExceptionMessage(file, numberOfAttempts, threadWasInterrupted), ex);
-            }
-        }
+    public static void deleteContentsRecursive(@NonNull File file) throws IOException {
+        deleteContentsRecursive(fileToPath(file), PathRemover.PathChecker.ALLOW_ALL);
+    }
+
+    /**
+     * Deletes the given directory contents (but not the directory itself) recursively using a PathChecker.
+     * @param path a directory to delete
+     * @param pathChecker a security check to validate a path before deleting
+     * @throws IOException if the operation fails
+     */
+    @Restricted(NoExternalUse.class)
+    public static void deleteContentsRecursive(@NonNull Path path, @NonNull PathRemover.PathChecker pathChecker) throws IOException {
+        newPathRemover(pathChecker).forceRemoveDirectoryContents(path);
     }
 
     /**
@@ -246,94 +268,8 @@ public class Util {
      * @param f a file to delete
      * @throws IOException if it exists but could not be successfully deleted
      */
-    public static void deleteFile(@Nonnull File f) throws IOException {
-        for( int numberOfAttempts=1 ; ; numberOfAttempts++ ) {
-            try {
-                tryOnceDeleteFile(f);
-                break; // success
-            } catch (IOException ex) {
-                boolean threadWasInterrupted = pauseBetweenDeletes(numberOfAttempts);
-                if( numberOfAttempts>= DELETION_MAX || threadWasInterrupted)
-                    throw new IOException(deleteFailExceptionMessage(f, numberOfAttempts, threadWasInterrupted), ex);
-            }
-        }
-    }
-
-    /**
-     * Deletes this file, working around most problems which might make
-     * this difficult.
-     * 
-     * @param f
-     *            What to delete. If a directory, it'll need to be empty.
-     * @throws IOException if it exists but could not be successfully deleted
-     */
-    private static void tryOnceDeleteFile(File f) throws IOException {
-        if (!f.delete()) {
-            if(!f.exists())
-                // we are trying to delete a file that no longer exists, so this is not an error
-                return;
-
-            // perhaps this file is read-only?
-            makeWritable(f);
-            /*
-             on Unix both the file and the directory that contains it has to be writable
-             for a file deletion to be successful. (Confirmed on Solaris 9)
-
-             $ ls -la
-             total 6
-             dr-xr-sr-x   2 hudson   hudson       512 Apr 18 14:41 .
-             dr-xr-sr-x   3 hudson   hudson       512 Apr 17 19:36 ..
-             -r--r--r--   1 hudson   hudson       469 Apr 17 19:36 manager.xml
-             -rw-r--r--   1 hudson   hudson         0 Apr 18 14:41 x
-             $ rm x
-             rm: x not removed: Permission denied
-             */
-
-            makeWritable(f.getParentFile());
-
-            if(!f.delete() && f.exists()) {
-                // trouble-shooting.
-                Files.deleteIfExists(f.toPath());
-
-                // see https://java.net/projects/hudson/lists/users/archive/2008-05/message/357
-                // I suspect other processes putting files in this directory
-                File[] files = f.listFiles();
-                if(files!=null && files.length>0)
-                    throw new IOException("Unable to delete " + f.getPath()+" - files in dir: "+Arrays.asList(files));
-                throw new IOException("Unable to delete " + f.getPath());
-            }
-        }
-    }
-
-    /**
-     * Makes the given file writable by any means possible.
-     */
-    private static void makeWritable(@Nonnull File f) {
-        if (f.setWritable(true)) {
-            return;
-        }
-        // TODO do we still need to try anything else?
-
-        // try chmod. this becomes no-op if this is not Unix.
-        try {
-            Chmod chmod = new Chmod();
-            chmod.setProject(new Project());
-            chmod.setFile(f);
-            chmod.setPerm("u+w");
-            chmod.execute();
-        } catch (BuildException e) {
-            LOGGER.log(Level.INFO,"Failed to chmod "+f,e);
-        }
-
-        try {// try libc chmod
-            POSIX posix = PosixAPI.jnr();
-            String path = f.getAbsolutePath();
-            FileStat stat = posix.stat(path);
-            posix.chmod(path, stat.mode()|0200); // u+w
-        } catch (Throwable t) {
-            LOGGER.log(Level.FINE,"Failed to chmod(2) "+f,t);
-        }
-
+    public static void deleteFile(@NonNull File f) throws IOException {
+        newPathRemover(PathRemover.PathChecker.ALLOW_ALL).forceRemoveFile(fileToPath(f));
     }
 
     /**
@@ -344,136 +280,19 @@ public class Util {
      * @throws IOException
      * if the operation fails.
      */
-    public static void deleteRecursive(@Nonnull File dir) throws IOException {
-        for( int numberOfAttempts=1 ; ; numberOfAttempts++ ) {
-            try {
-                tryOnceDeleteRecursive(dir);
-                break; // success
-            } catch (IOException ex) {
-                boolean threadWasInterrupted = pauseBetweenDeletes(numberOfAttempts);
-                if( numberOfAttempts>= DELETION_MAX || threadWasInterrupted)
-                    throw new IOException(deleteFailExceptionMessage(dir, numberOfAttempts, threadWasInterrupted), ex);
-            }
-        }
+    public static void deleteRecursive(@NonNull File dir) throws IOException {
+        deleteRecursive(fileToPath(dir), PathRemover.PathChecker.ALLOW_ALL);
     }
 
     /**
-     * Deletes a file or folder, throwing the first exception encountered, but
-     * having a go at deleting everything. i.e. it does not <em>stop</em> on the
-     * first exception, but tries (to delete) everything once.
-     *
-     * @param dir
-     * What to delete. If a directory, the contents will be deleted
-     * too.
-     * @throws The first exception encountered.
+     * Deletes the given directory and contents recursively using a filter.
+     * @param dir a directory to delete
+     * @param pathChecker a security check to validate a path before deleting
+     * @throws IOException if the operation fails
      */
-    private static void tryOnceDeleteRecursive(File dir) throws IOException {
-        if(!isSymlink(dir))
-            tryOnceDeleteContentsRecursive(dir);
-        tryOnceDeleteFile(dir);
-    }
-
-    /**
-     * Deletes a folder's contents, throwing the first exception encountered,
-     * but having a go at deleting everything. i.e. it does not <em>stop</em>
-     * on the first exception, but tries (to delete) everything once.
-     *
-     * @param directory
-     * The directory whose contents will be deleted.
-     * @throws The first exception encountered.
-     */
-    private static void tryOnceDeleteContentsRecursive(File directory) throws IOException {
-        File[] directoryContents = directory.listFiles();
-        if(directoryContents==null)
-            return; // the directory didn't exist in the first place
-        IOException firstCaught = null;
-        for (File child : directoryContents) {
-            try {
-                tryOnceDeleteRecursive(child);
-            } catch (IOException justCaught) {
-                if( firstCaught==null) {
-                    firstCaught = justCaught;
-                }
-            }
-        }
-        if( firstCaught!=null )
-            throw firstCaught;
-    }
-
-    /**
-     * Pauses between delete attempts, and says if it's ok to try again.
-     * This does not wait if the wait time is zero or if we have tried
-     * too many times already.
-     * <p>
-     * See {@link #WAIT_BETWEEN_DELETION_RETRIES} for details of
-     * the pause duration.<br/>
-     * See {@link #GC_AFTER_FAILED_DELETE} for when {@link System#gc()} is called.
-     * 
-     * @return false if it is ok to continue trying to delete things, true if
-     *         we were interrupted (and should stop now).
-     */
-    private static boolean pauseBetweenDeletes(int numberOfAttemptsSoFar) {
-        long delayInMs;
-        if( numberOfAttemptsSoFar>=DELETION_MAX ) return false;
-        /* If the Jenkins process had the file open earlier, and it has not
-         * closed it then Windows won't let us delete it until the Java object
-         * with the open stream is Garbage Collected, which can result in builds
-         * failing due to "file in use" on Windows despite working perfectly
-         * well on other OSs. */
-        if (GC_AFTER_FAILED_DELETE) {
-            System.gc();
-        }
-        if (WAIT_BETWEEN_DELETION_RETRIES>=0) {
-            delayInMs = WAIT_BETWEEN_DELETION_RETRIES;
-        } else {
-            delayInMs = -numberOfAttemptsSoFar*WAIT_BETWEEN_DELETION_RETRIES;
-        }
-        if (delayInMs<=0)
-            return Thread.interrupted();
-        try {
-            Thread.sleep(delayInMs);
-            return false;
-        } catch (InterruptedException e) {
-            return true;
-        }
-    }
-
-    /**
-     * Creates a "couldn't delete file" message that explains how hard we tried.
-     * See {@link #DELETION_MAX}, {@link #WAIT_BETWEEN_DELETION_RETRIES}
-     * and {@link #GC_AFTER_FAILED_DELETE} for more details.
-     */
-    private static String deleteFailExceptionMessage(File whatWeWereTryingToRemove, int retryCount, boolean wasInterrupted) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("Unable to delete '");
-        sb.append(whatWeWereTryingToRemove);
-        sb.append("'. Tried ");
-        sb.append(retryCount);
-        sb.append(" time");
-        if( retryCount!=1 ) sb.append('s');
-        if( DELETION_MAX>1 ) {
-            sb.append(" (of a maximum of ");
-            sb.append(DELETION_MAX);
-            sb.append(')');
-            if( GC_AFTER_FAILED_DELETE )
-                sb.append(" garbage-collecting");
-            if( WAIT_BETWEEN_DELETION_RETRIES!=0 && GC_AFTER_FAILED_DELETE )
-                sb.append(" and");
-            if( WAIT_BETWEEN_DELETION_RETRIES!=0 ) {
-                sb.append(" waiting ");
-                sb.append(getTimeSpanString(Math.abs(WAIT_BETWEEN_DELETION_RETRIES)));
-                if( WAIT_BETWEEN_DELETION_RETRIES<0 ) {
-                    sb.append("-");
-                    sb.append(getTimeSpanString(Math.abs(WAIT_BETWEEN_DELETION_RETRIES)*DELETION_MAX));
-                }
-            }
-            if( WAIT_BETWEEN_DELETION_RETRIES!=0 || GC_AFTER_FAILED_DELETE)
-                sb.append(" between attempts");
-        }
-        if( wasInterrupted )
-            sb.append(". The delete operation was interrupted before it completed successfully");
-        sb.append('.');
-        return sb.toString();
+    @Restricted(NoExternalUse.class)
+    public static void deleteRecursive(@NonNull Path dir, @NonNull PathRemover.PathChecker pathChecker) throws IOException {
+        newPathRemover(pathChecker).forceRemoveRecursive(dir);
     }
 
     /*
@@ -492,42 +311,33 @@ public class Util {
      * limitations under the License.
      */
     /**
-     * Checks if the given file represents a symlink.
+     * Checks if the given file represents a symlink. Unlike {@link Files#isSymbolicLink(Path)}, this method also
+     * considers <a href="https://en.wikipedia.org/wiki/NTFS_junction_point">NTFS junction points</a> as symbolic
+     * links.
      */
-    //Taken from http://svn.apache.org/viewvc/maven/shared/trunk/file-management/src/main/java/org/apache/maven/shared/model/fileset/util/FileSetManager.java?view=markup
-    public static boolean isSymlink(@Nonnull File file) throws IOException {
-        Boolean r = isSymlinkJava7(file);
-        if (r != null) {
-            return r;
-        }
-        if (Functions.isWindows()) {
-            try {
-                return Kernel32Utils.isJunctionOrSymlink(file);
-            } catch (UnsupportedOperationException | LinkageError e) {
-                // fall through
-            }
-        }
-        String name = file.getName();
-        if (name.equals(".") || name.equals(".."))
-            return false;
-
-        File fileInCanonicalParent;
-        File parentDir = file.getParentFile();
-        if ( parentDir == null ) {
-            fileInCanonicalParent = file;
-        } else {
-            fileInCanonicalParent = new File( parentDir.getCanonicalPath(), name );
-        }
-        return !fileInCanonicalParent.getCanonicalFile().equals( fileInCanonicalParent.getAbsoluteFile() );
+    public static boolean isSymlink(@NonNull File file) throws IOException {
+        return isSymlink(fileToPath(file));
     }
 
-    @SuppressWarnings("NP_BOOLEAN_RETURN_NULL")
-    private static Boolean isSymlinkJava7(@Nonnull File file) throws IOException {
+    @Restricted(NoExternalUse.class)
+    public static boolean isSymlink(@NonNull Path path) {
+        /*
+         *  Windows Directory Junctions are effectively the same as Linux symlinks to directories.
+         *  Unfortunately, the Java 7 NIO2 API function isSymbolicLink does not treat them as such.
+         *  It thinks of them as normal directories.  To use the NIO2 API & treat it like a symlink,
+         *  you have to go through BasicFileAttributes and do the following check:
+         *     isSymbolicLink() || isOther()
+         *  The isOther() call will include Windows reparse points, of which a directory junction is.
+         *  It also includes includes devices, but reading the attributes of a device with NIO fails
+         *  or returns false for isOther(). (i.e. named pipes such as \\.\pipe\JenkinsTestPipe return
+         *  false for isOther(), and drives such as \\.\PhysicalDrive0 throw an exception when
+         *  calling readAttributes.
+         */
         try {
-            Path path = file.toPath();
-            return Files.isSymbolicLink(path);
-        } catch (Exception x) {
-            throw (IOException) new IOException(x.toString()).initCause(x);
+            BasicFileAttributes attrs = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+            return attrs.isSymbolicLink() || (attrs instanceof DosFileAttributes && attrs.isOther());
+        } catch (IOException ignored) {
+            return false;
         }
     }
 
@@ -556,15 +366,44 @@ public class Util {
     }
 
     /**
+     * A check if a file path is a descendant of a parent path
+     * @param forParent the parent the child should be a descendant of
+     * @param potentialChild the path to check
+     * @return true if so
+     * @throws IOException for invalid paths
+     * @since 2.80
+     * @see InvalidPathException
+     */
+    public static boolean isDescendant(File forParent, File potentialChild) throws IOException {
+        Path child = fileToPath(potentialChild.getAbsoluteFile()).normalize();
+        Path parent = fileToPath(forParent.getAbsoluteFile()).normalize();
+        return child.startsWith(parent);
+    }
+
+    /**
      * Creates a new temporary directory.
      */
     public static File createTempDir() throws IOException {
-        File tmp = File.createTempFile("hudson", "tmp");
-        if(!tmp.delete())
-            throw new IOException("Failed to delete "+tmp);
-        if(!tmp.mkdirs())
-            throw new IOException("Failed to create a new directory "+tmp);
-        return tmp;
+        // The previously used approach of creating a temporary file, deleting
+        // it, and making a new directory having the same name in its place is
+        // potentially  problematic:
+        // https://stackoverflow.com/questions/617414/how-to-create-a-temporary-directory-folder-in-java
+        // We can use the Java 7 Files.createTempDirectory() API, but note that
+        // by default, the permissions of the created directory are 0700&(~umask)
+        // whereas the old approach created a temporary directory with permissions
+        // 0777&(~umask).
+        // To avoid permissions problems like https://issues.jenkins-ci.org/browse/JENKINS-48407
+        // we can pass POSIX file permissions as an attribute (see, for example,
+        // https://github.com/jenkinsci/jenkins/pull/3161 )
+        final Path tempPath;
+        final String tempDirNamePrefix = "jenkins";
+        if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+            tempPath = Files.createTempDirectory(tempDirNamePrefix,
+                    PosixFilePermissions.asFileAttribute(EnumSet.allOf(PosixFilePermission.class)));
+        } else {
+            tempPath = Files.createTempDirectory(tempDirNamePrefix);
+        }
+        return tempPath.toFile();
     }
 
     private static final Pattern errorCodeParser = Pattern.compile(".*CreateProcess.*error=([0-9]+).*");
@@ -573,14 +412,14 @@ public class Util {
      * On Windows, error messages for IOException aren't very helpful.
      * This method generates additional user-friendly error message to the listener
      */
-    public static void displayIOException(@Nonnull IOException e, @Nonnull TaskListener listener ) {
+    public static void displayIOException(@NonNull IOException e, @NonNull TaskListener listener ) {
         String msg = getWin32ErrorMessage(e);
         if(msg!=null)
             listener.getLogger().println(msg);
     }
 
     @CheckForNull
-    public static String getWin32ErrorMessage(@Nonnull IOException e) {
+    public static String getWin32ErrorMessage(@NonNull IOException e) {
         return getWin32ErrorMessage((Throwable)e);
     }
 
@@ -599,7 +438,7 @@ public class Util {
                 try {
                     ResourceBundle rb = ResourceBundle.getBundle("/hudson/win32errors");
                     return rb.getString("error"+m.group(1));
-                } catch (Exception _) {
+                } catch (Exception ignored) {
                     // silently recover from resource related failures
                 }
             }
@@ -630,7 +469,7 @@ public class Util {
     /**
      * Guesses the current host name.
      */
-    @Nonnull
+    @NonNull
     public static String getHostName() {
         try {
             return InetAddress.getLocalHost().getHostName();
@@ -639,35 +478,39 @@ public class Util {
         }
     }
 
-    public static void copyStream(@Nonnull InputStream in,@Nonnull OutputStream out) throws IOException {
-        byte[] buf = new byte[8192];
-        int len;
-        while((len=in.read(buf))>=0)
-            out.write(buf,0,len);
+    /**
+     * @deprecated Use {@link IOUtils#copy(InputStream, OutputStream)}
+     */
+    @Deprecated
+    public static void copyStream(@NonNull InputStream in,@NonNull OutputStream out) throws IOException {
+        IOUtils.copy(in, out);
     }
 
-    public static void copyStream(@Nonnull Reader in, @Nonnull Writer out) throws IOException {
-        char[] buf = new char[8192];
-        int len;
-        while((len=in.read(buf))>0)
-            out.write(buf,0,len);
+    /**
+     * @deprecated Use {@link IOUtils#copy(Reader, Writer)}
+     */
+    @Deprecated
+    public static void copyStream(@NonNull Reader in, @NonNull Writer out) throws IOException {
+        IOUtils.copy(in, out);
     }
 
-    public static void copyStreamAndClose(@Nonnull InputStream in, @Nonnull OutputStream out) throws IOException {
-        try {
-            copyStream(in,out);
-        } finally {
-            IOUtils.closeQuietly(in);
-            IOUtils.closeQuietly(out);
+    /**
+     * @deprecated Use {@link IOUtils#copy(InputStream, OutputStream)} in a {@code try}-with-resources block
+     */
+    @Deprecated
+    public static void copyStreamAndClose(@NonNull InputStream in, @NonNull OutputStream out) throws IOException {
+        try (InputStream _in = in; OutputStream _out = out) { // make sure both are closed, and use Throwable.addSuppressed
+            IOUtils.copy(_in, _out);
         }
     }
 
-    public static void copyStreamAndClose(@Nonnull Reader in, @Nonnull Writer out) throws IOException {
-        try {
-            copyStream(in,out);
-        } finally {
-            IOUtils.closeQuietly(in);
-            IOUtils.closeQuietly(out);
+    /**
+     * @deprecated Use {@link IOUtils#copy(Reader, Writer)} in a {@code try}-with-resources block
+     */
+    @Deprecated
+    public static void copyStreamAndClose(@NonNull Reader in, @NonNull Writer out) throws IOException {
+        try (Reader _in = in; Writer _out = out) {
+            IOUtils.copy(_in, _out);
         }
     }
 
@@ -681,21 +524,21 @@ public class Util {
      * @since 1.145
      * @see QuotedStringTokenizer
      */
-    @Nonnull
-    public static String[] tokenize(@Nonnull String s, @CheckForNull String delimiter) {
+    @NonNull
+    public static String[] tokenize(@NonNull String s, @CheckForNull String delimiter) {
         return QuotedStringTokenizer.tokenize(s,delimiter);
     }
 
-    @Nonnull
-    public static String[] tokenize(@Nonnull String s) {
+    @NonNull
+    public static String[] tokenize(@NonNull String s) {
         return tokenize(s," \t\n\r\f");
     }
 
     /**
      * Converts the map format of the environment variables to the K=V format in the array.
      */
-    @Nonnull
-    public static String[] mapToEnv(@Nonnull Map<String,String> m) {
+    @NonNull
+    public static String[] mapToEnv(@NonNull Map<String,String> m) {
         String[] r = new String[m.size()];
         int idx=0;
 
@@ -705,7 +548,7 @@ public class Util {
         return r;
     }
 
-    public static int min(int x, @Nonnull int... values) {
+    public static int min(int x, @NonNull int... values) {
         for (int i : values) {
             if(i<x)
                 x=i;
@@ -718,8 +561,8 @@ public class Util {
         return fixEmpty(v);
     }
 
-    @Nonnull
-    public static String removeTrailingSlash(@Nonnull String s) {
+    @NonNull
+    public static String removeTrailingSlash(@NonNull String s) {
         if(s.endsWith("/")) return s.substring(0,s.length()-1);
         else                return s;
     }
@@ -747,28 +590,27 @@ public class Util {
     /**
      * Computes MD5 digest of the given input stream.
      *
+     * This method should only be used for non-security applications where the MD5 weakness is not a problem.
+     *
      * @param source
      *      The stream will be closed by this method at the end of this method.
      * @return
      *      32-char wide string
      * @see DigestUtils#md5Hex(InputStream)
      */
-    @Nonnull
-    public static String getDigestOf(@Nonnull InputStream source) throws IOException {
+    @NonNull
+    public static String getDigestOf(@NonNull InputStream source) throws IOException {
         try {
-            MessageDigest md5 = MessageDigest.getInstance("MD5");
-
-            byte[] buffer = new byte[1024];
-            DigestInputStream in =new DigestInputStream(source,md5);
-            try {
-                while(in.read(buffer)>=0)
-                    ; // simply discard the input
-            } finally {
-                in.close();
-            }
+            MessageDigest md5 = getMd5();
+            DigestInputStream in = new DigestInputStream(source, md5);
+            // Note: IOUtils.copy() buffers the input internally, so there is no
+            // need to use a BufferedInputStream.
+            IOUtils.copy(in, NullOutputStream.NULL_OUTPUT_STREAM);
             return toHexString(md5.digest());
         } catch (NoSuchAlgorithmException e) {
             throw new IOException("MD5 not installed",e);    // impossible
+        } finally {
+            source.close();
         }
         /* JENKINS-18178: confuses Maven 2 runner
         try {
@@ -779,10 +621,18 @@ public class Util {
         */
     }
 
-    @Nonnull
-    public static String getDigestOf(@Nonnull String text) {
+    // TODO JENKINS-60563 remove MD5 from all usages in Jenkins
+    @SuppressFBWarnings(value = "WEAK_MESSAGE_DIGEST_MD5", justification =
+            "This method should only be used for non-security applications where the MD5 weakness is not a problem.")
+    @Deprecated
+    private static MessageDigest getMd5() throws NoSuchAlgorithmException {
+        return MessageDigest.getInstance("MD5");
+    }
+
+    @NonNull
+    public static String getDigestOf(@NonNull String text) {
         try {
-            return getDigestOf(new ByteArrayInputStream(text.getBytes("UTF-8")));
+            return getDigestOf(new ByteArrayInputStream(text.getBytes(StandardCharsets.UTF_8)));
         } catch (IOException e) {
             throw new Error(e);
         }
@@ -795,39 +645,33 @@ public class Util {
      * @throws IOException in case reading fails
      * @since 1.525
      */
-    @Nonnull
-    public static String getDigestOf(@Nonnull File file) throws IOException {
-        InputStream is = new FileInputStream(file);
-        try {
-            return getDigestOf(new BufferedInputStream(is));
-        } finally {
-            is.close();
-        }
+    @NonNull
+    public static String getDigestOf(@NonNull File file) throws IOException {
+        // Note: getDigestOf() closes the input stream.
+        return getDigestOf(Files.newInputStream(fileToPath(file)));
     }
 
     /**
      * Converts a string into 128-bit AES key.
      * @since 1.308
      */
-    @Nonnull
-    public static SecretKey toAes128Key(@Nonnull String s) {
+    @NonNull
+    public static SecretKey toAes128Key(@NonNull String s) {
         try {
             // turn secretKey into 256 bit hash
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             digest.reset();
-            digest.update(s.getBytes("UTF-8"));
+            digest.update(s.getBytes(StandardCharsets.UTF_8));
 
             // Due to the stupid US export restriction JDK only ships 128bit version.
             return new SecretKeySpec(digest.digest(),0,128/8, "AES");
         } catch (NoSuchAlgorithmException e) {
             throw new Error(e);
-        } catch (UnsupportedEncodingException e) {
-            throw new Error(e);
         }
     }
 
-    @Nonnull
-    public static String toHexString(@Nonnull byte[] data, int start, int len) {
+    @NonNull
+    public static String toHexString(@NonNull byte[] data, int start, int len) {
         StringBuilder buf = new StringBuilder();
         for( int i=0; i<len; i++ ) {
             int b = data[start+i]&0xFF;
@@ -837,13 +681,15 @@ public class Util {
         return buf.toString();
     }
 
-    @Nonnull
-    public static String toHexString(@Nonnull byte[] bytes) {
+    @NonNull
+    public static String toHexString(@NonNull byte[] bytes) {
         return toHexString(bytes,0,bytes.length);
     }
 
-    @Nonnull
-    public static byte[] fromHexString(@Nonnull String data) {
+    @NonNull
+    public static byte[] fromHexString(@NonNull String data) {
+        if (data.length() % 2 != 0)
+            throw new IllegalArgumentException("data must have an even number of hexadecimal digits");
         byte[] r = new byte[data.length() / 2];
         for (int i = 0; i < data.length(); i += 2)
             r[i / 2] = (byte) Integer.parseInt(data.substring(i, i + 2), 16);
@@ -857,7 +703,8 @@ public class Util {
      * @param duration
      *      number of milliseconds.
      */
-    @Nonnull
+    @NonNull
+    @SuppressFBWarnings(value = "ICAST_IDIV_CAST_TO_DOUBLE", justification = "We want to truncate here.")
     public static String getTimeSpanString(long duration) {
         // Break the duration up in to units.
         long years = duration / ONE_YEAR_MS;
@@ -904,11 +751,11 @@ public class Util {
      * So 13 minutes and 43 seconds returns just "13 minutes", but 3 minutes
      * and 43 seconds is "3 minutes 43 seconds".
      */
-    @Nonnull
+    @NonNull
     private static String makeTimeSpanString(long bigUnit,
-                                             @Nonnull String bigLabel,
+                                             @NonNull String bigLabel,
                                              long smallUnit,
-                                             @Nonnull String smallLabel) {
+                                             @NonNull String smallLabel) {
         String text = bigLabel;
         if (bigUnit < 10)
             text += ' ' + smallLabel;
@@ -919,10 +766,12 @@ public class Util {
     /**
      * Get a human readable string representing strings like "xxx days ago",
      * which should be used to point to the occurrence of an event in the past.
+     * @deprecated Actually identical to {@link #getTimeSpanString}, does not add {@code ago}.
      */
-    @Nonnull
+    @Deprecated
+    @NonNull
     public static String getPastTimeString(long duration) {
-        return Messages.Util_pastTime(getTimeSpanString(duration));
+        return getTimeSpanString(duration);
     }
 
 
@@ -934,9 +783,9 @@ public class Util {
      *   See {@link Messages#Util_year(Object)} for an example.
      *   Deprecated since 2009-06-24, remove method after 2009-12-24.
      */
-    @Nonnull
+    @NonNull
     @Deprecated
-    public static String combine(long n, @Nonnull String suffix) {
+    public static String combine(long n, @NonNull String suffix) {
         String s = Long.toString(n)+' '+suffix;
         if(n!=1)
         	// Just adding an 's' won't work in most natural languages, even English has exception to the rule (e.g. copy/copies).
@@ -947,9 +796,9 @@ public class Util {
     /**
      * Create a sub-list by only picking up instances of the specified type.
      */
-    @Nonnull
-    public static <T> List<T> createSubList(@Nonnull Collection<?> source, @Nonnull Class<T> type ) {
-        List<T> r = new ArrayList<T>();
+    @NonNull
+    public static <T> List<T> createSubList(@NonNull Collection<?> source, @NonNull Class<T> type ) {
+        List<T> r = new ArrayList<>();
         for (Object item : source) {
             if(type.isInstance(item))
                 r.add(type.cast(item));
@@ -966,15 +815,15 @@ public class Util {
      * {@link #rawEncode(String)} should generally be used instead, though be careful to pass only
      * a single path component to that method (it will encode /, but this method does not).
      */
-    @Nonnull
-    public static String encode(@Nonnull String s) {
+    @NonNull
+    public static String encode(@NonNull String s) {
         try {
             boolean escaped = false;
 
             StringBuilder out = new StringBuilder(s.length());
 
             ByteArrayOutputStream buf = new ByteArrayOutputStream();
-            OutputStreamWriter w = new OutputStreamWriter(buf,"UTF-8");
+            OutputStreamWriter w = new OutputStreamWriter(buf, StandardCharsets.UTF_8);
 
             for (int i = 0; i < s.length(); i++) {
                 int c = s.charAt(i);
@@ -1024,37 +873,60 @@ public class Util {
      * single path component used in constructing a URL.
      * Method name inspired by PHP's rawurlencode.
      */
-    @Nonnull
-    public static String rawEncode(@Nonnull String s) {
+    @NonNull
+    public static String rawEncode(@NonNull String s) {
         boolean escaped = false;
         StringBuilder out = null;
         CharsetEncoder enc = null;
         CharBuffer buf = null;
         char c;
         for (int i = 0, m = s.length(); i < m; i++) {
-            c = s.charAt(i);
-            if (c > 122 || uriMap[c]) {
+            int codePoint = Character.codePointAt(s, i);
+            if((codePoint&0xffffff80)==0) { // 1 byte
+                c = s.charAt(i);
+                if (c > 122 || uriMap[c]) {
+                    if (!escaped) {
+                        out = new StringBuilder(i + (m - i) * 3);
+                        out.append(s, 0, i);
+                        escaped = true;
+                    }
+                    if (enc == null || buf == null) {
+                        enc = StandardCharsets.UTF_8.newEncoder();
+                        buf = CharBuffer.allocate(1);
+                    }
+                    // 1 char -> UTF8
+                    buf.put(0, c);
+                    buf.rewind();
+                    try {
+                        ByteBuffer bytes = enc.encode(buf);
+                        while (bytes.hasRemaining()) {
+                            byte b = bytes.get();
+                            out.append('%');
+                            out.append(toDigit((b >> 4) & 0xF));
+                            out.append(toDigit(b & 0xF));
+                        }
+                    } catch (CharacterCodingException ex) {
+                    }
+                } else if (escaped) {
+                    out.append(c);
+                }
+            } else {
                 if (!escaped) {
                     out = new StringBuilder(i + (m - i) * 3);
-                    out.append(s.substring(0, i));
-                    enc = Charset.forName("UTF-8").newEncoder();
-                    buf = CharBuffer.allocate(1);
+                    out.append(s, 0, i);
                     escaped = true;
                 }
-                // 1 char -> UTF8
-                buf.put(0,c);
-                buf.rewind();
-                try {
-                    ByteBuffer bytes = enc.encode(buf);
-                    while (bytes.hasRemaining()) {
-                        byte b = bytes.get();
-                        out.append('%');
-                        out.append(toDigit((b >> 4) & 0xF));
-                        out.append(toDigit(b & 0xF));
-                    }
-                } catch (CharacterCodingException ex) { }
-            } else if (escaped) {
-                out.append(c);
+
+                byte[] bytes = new String(new int[] { codePoint }, 0, 1).getBytes(StandardCharsets.UTF_8);
+                for (byte aByte : bytes) {
+                    out.append('%');
+                    out.append(toDigit((aByte >> 4) & 0xF));
+                    out.append(toDigit(aByte & 0xF));
+                }
+
+                if(Character.charCount(codePoint) > 1) {
+                    i++; // we processed two characters
+                }
             }
         }
         return escaped ? out.toString() : s;
@@ -1074,8 +946,8 @@ public class Util {
     /**
      * Escapes HTML unsafe characters like &lt;, &amp; to the respective character entities.
      */
-    @Nonnull
-    public static String escape(@Nonnull String text) {
+    @Nullable
+    public static String escape(@CheckForNull String text) {
         if (text==null)     return null;
         StringBuilder buf = new StringBuilder(text.length()+64);
         for( int i=0; i<text.length(); i++ ) {
@@ -1111,8 +983,8 @@ public class Util {
         return buf.toString();
     }
 
-    @Nonnull
-    public static String xmlEscape(@Nonnull String text) {
+    @NonNull
+    public static String xmlEscape(@NonNull String text) {
         StringBuilder buf = new StringBuilder(text.length()+64);
         for( int i=0; i<text.length(); i++ ) {
             char ch = text.charAt(i);
@@ -1131,16 +1003,19 @@ public class Util {
     }
 
     /**
-     * Creates an empty file.
+     * Creates an empty file if nonexistent or truncates the existing file.
+     * Note: The behavior of this method in the case where the file already
+     * exists is unlike the POSIX {@code touch} utility which merely
+     * updates the file's access and/or modification time.
      */
-    public static void touch(@Nonnull File file) throws IOException {
-        new FileOutputStream(file).close();
+    public static void touch(@NonNull File file) throws IOException {
+        Files.newOutputStream(fileToPath(file)).close();
     }
 
     /**
      * Copies a single file by using Ant.
      */
-    public static void copyFile(@Nonnull File src, @Nonnull File dst) throws BuildException {
+    public static void copyFile(@NonNull File src, @NonNull File dst) throws BuildException {
         Copy cp = new Copy();
         cp.setProject(new org.apache.tools.ant.Project());
         cp.setTofile(dst);
@@ -1152,10 +1027,19 @@ public class Util {
     /**
      * Convert null to "".
      */
-    @Nonnull
+    @NonNull
     public static String fixNull(@CheckForNull String s) {
-        if(s==null)     return "";
-        else            return s;
+        return fixNull(s, "");
+    }
+
+    /**
+     * Convert {@code null} to a default value.
+     * @param defaultValue Default value. It may be immutable or not, depending on the implementation.
+     * @since 2.144
+     */
+    @NonNull
+    public static <T> T fixNull(@CheckForNull T s, @NonNull T defaultValue) {
+        return s != null ? s : defaultValue;
     }
 
     /**
@@ -1178,31 +1062,67 @@ public class Util {
         return fixEmpty(s.trim());
     }
 
-    @Nonnull
+    /**
+     *
+     * @param l list to check.
+     * @param <T>
+     *     Type of the list.
+     * @return
+     *     {@code l} if l is not {@code null}.
+     *     An empty <b>immutable list</b> if l is {@code null}.
+     */
+    @NonNull
     public static <T> List<T> fixNull(@CheckForNull List<T> l) {
-        return l!=null ? l : Collections.<T>emptyList();
+        return fixNull(l, Collections.emptyList());
     }
 
-    @Nonnull
+    /**
+     *
+     * @param l set to check.
+     * @param <T>
+     *     Type of the set.
+     * @return
+     *     {@code l} if l is not {@code null}.
+     *     An empty <b>immutable set</b> if l is {@code null}.
+     */
+    @NonNull
     public static <T> Set<T> fixNull(@CheckForNull Set<T> l) {
-        return l!=null ? l : Collections.<T>emptySet();
+        return fixNull(l, Collections.emptySet());
     }
 
-    @Nonnull
+    /**
+     *
+     * @param l collection to check.
+     * @param <T>
+     *     Type of the collection.
+     * @return
+     *     {@code l} if l is not {@code null}.
+     *     An empty <b>immutable set</b> if l is {@code null}.
+     */
+    @NonNull
     public static <T> Collection<T> fixNull(@CheckForNull Collection<T> l) {
-        return l!=null ? l : Collections.<T>emptySet();
+        return fixNull(l, Collections.emptySet());
     }
 
-    @Nonnull
+    /**
+     *
+     * @param l iterable to check.
+     * @param <T>
+     *     Type of the iterable.
+     * @return
+     *     {@code l} if l is not {@code null}.
+     *     An empty <b>immutable set</b> if l is {@code null}.
+     */
+    @NonNull
     public static <T> Iterable<T> fixNull(@CheckForNull Iterable<T> l) {
-        return l!=null ? l : Collections.<T>emptySet();
+        return fixNull(l, Collections.emptySet());
     }
 
     /**
      * Cuts all the leading path portion and get just the file name.
      */
-    @Nonnull
-    public static String getFileName(@Nonnull String filePath) {
+    @NonNull
+    public static String getFileName(@NonNull String filePath) {
         int idx = filePath.lastIndexOf('\\');
         if(idx>=0)
             return getFileName(filePath.substring(idx+1));
@@ -1215,8 +1135,8 @@ public class Util {
     /**
      * Concatenate multiple strings by inserting a separator.
      */
-    @Nonnull
-    public static String join(@Nonnull Collection<?> strings, @Nonnull String separator) {
+    @NonNull
+    public static String join(@NonNull Collection<?> strings, @NonNull String separator) {
         StringBuilder buf = new StringBuilder();
         boolean first=true;
         for (Object s : strings) {
@@ -1230,12 +1150,12 @@ public class Util {
     /**
      * Combines all the given collections into a single list.
      */
-    @Nonnull
-    public static <T> List<T> join(@Nonnull Collection<? extends T>... items) {
+    @NonNull
+    public static <T> List<T> join(@NonNull Collection<? extends T>... items) {
         int size = 0;
         for (Collection<? extends T> item : items)
             size += item.size();
-        List<T> r = new ArrayList<T>(size);
+        List<T> r = new ArrayList<>(size);
         for (Collection<? extends T> item : items)
             r.addAll(item);
         return r;
@@ -1258,8 +1178,8 @@ public class Util {
      *      Can be null.
      * @since 1.172
      */
-    @Nonnull
-    public static FileSet createFileSet(@Nonnull File baseDir, @Nonnull String includes, @CheckForNull String excludes) {
+    @NonNull
+    public static FileSet createFileSet(@NonNull File baseDir, @NonNull String includes, @CheckForNull String excludes) {
         FileSet fs = new FileSet();
         fs.setDir(baseDir);
         fs.setProject(new Project());
@@ -1281,9 +1201,68 @@ public class Util {
         return fs;
     }
 
-    @Nonnull
-    public static FileSet createFileSet(@Nonnull File baseDir, @Nonnull String includes) {
+    @NonNull
+    public static FileSet createFileSet(@NonNull File baseDir, @NonNull String includes) {
         return createFileSet(baseDir,includes,null);
+    }
+
+    private static void tryToDeleteSymlink(@NonNull File symlink) {
+        if (!symlink.delete()) {
+            LogRecord record = new LogRecord(Level.FINE, "Failed to delete temporary symlink {0}");
+            record.setParameters(new Object[]{symlink.getAbsolutePath()});
+            LOGGER.log(record);
+        }
+    }
+
+    private static void reportAtomicFailure(@NonNull Path pathForSymlink, @NonNull Exception ex) {
+        LogRecord record = new LogRecord(Level.FINE, "Failed to atomically create/replace symlink {0}");
+        record.setParameters(new Object[]{pathForSymlink.toAbsolutePath().toString()});
+        record.setThrown(ex);
+        LOGGER.log(record);
+    }
+
+    /**
+     * Creates a symlink to targetPath at baseDir+symlinkPath.
+     *
+     * @param pathForSymlink
+     *      The absolute path of the symlink itself as a path object.
+     * @param fileForSymlink
+     *      The absolute path of the symlink itself as a file object.
+     * @param target
+     *      The path that the symlink should point to. Usually relative to the directory of the symlink but may instead be an absolute path.
+     * @param symlinkPath
+     *      Where to create a symlink in (relative to {@code baseDir})
+     *
+     * Returns true on success
+     */
+    @CheckReturnValue
+    private static boolean createSymlinkAtomic(@NonNull Path pathForSymlink, @NonNull File fileForSymlink, @NonNull Path target, @NonNull String symlinkPath) {
+        try {
+            File symlink = File.createTempFile("symtmp", null, fileForSymlink);
+            tryToDeleteSymlink(symlink);
+            Path tempSymlinkPath = symlink.toPath();
+            Files.createSymbolicLink(tempSymlinkPath, target);
+            try {
+                Files.move(tempSymlinkPath, pathForSymlink, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+                return true;
+            } catch (
+                UnsupportedOperationException |
+                SecurityException |
+                IOException ex) {
+                // If we couldn't perform an atomic move or the setup, we fall through to another approach
+                reportAtomicFailure(pathForSymlink, ex);
+            }
+            // If we didn't return after our atomic move, then we want to clean up our symlink
+            tryToDeleteSymlink(symlink);
+        } catch (
+            SecurityException |
+            InvalidPathException |
+            UnsupportedOperationException |
+            IOException ex) {
+            // We couldn't perform an atomic move or the setup.
+            reportAtomicFailure(pathForSymlink, ex);
+        }
+        return false;
     }
 
     /**
@@ -1298,113 +1277,45 @@ public class Util {
      * @param symlinkPath
      *      Where to create a symlink in (relative to {@code baseDir})
      */
-    public static void createSymlink(@Nonnull File baseDir, @Nonnull String targetPath,
-            @Nonnull String symlinkPath, @Nonnull TaskListener listener) throws InterruptedException {
+    public static void createSymlink(@NonNull File baseDir, @NonNull String targetPath,
+            @NonNull String symlinkPath, @NonNull TaskListener listener) throws InterruptedException {
+        File fileForSymlink = new File(baseDir, symlinkPath);
         try {
-            if (createSymlinkJava7(baseDir, targetPath, symlinkPath)) {
+            Path pathForSymlink = fileToPath(fileForSymlink);
+            Path target = Paths.get(targetPath, MemoryReductionUtil.EMPTY_STRING_ARRAY);
+
+            if (createSymlinkAtomic(pathForSymlink, fileForSymlink, target, symlinkPath)) {
                 return;
             }
-            if (NO_SYMLINK) {
-                return;
-            }
-
-            File symlinkFile = new File(baseDir, symlinkPath);
-            if (Functions.isWindows()) {
-                if (symlinkFile.exists()) {
-                    symlinkFile.delete();
-                }
-                File dst = new File(symlinkFile,"..\\"+targetPath);
-                try {
-                    Kernel32Utils.createSymbolicLink(symlinkFile,targetPath,dst.isDirectory());
-                } catch (WinIOException e) {
-                    if (e.getErrorCode()==1314) {/* ERROR_PRIVILEGE_NOT_HELD */
-                        warnWindowsSymlink();
-                        return;
-                    }
-                    throw e;
-                } catch (UnsatisfiedLinkError e) {
-                    // not available on this Windows
-                    return;
-                }
-            } else {
-                String errmsg = "";
-                // if a file or a directory exists here, delete it first.
-                // try simple delete first (whether exists() or not, as it may be symlink pointing
-                // to non-existent target), but fallback to "rm -rf" to delete non-empty dir.
-                if (!symlinkFile.delete() && symlinkFile.exists())
-                    // ignore a failure.
-                    new LocalProc(new String[]{"rm","-rf", symlinkPath},new String[0],listener.getLogger(), baseDir).join();
-
-                Integer r=null;
-                if (!SYMLINK_ESCAPEHATCH) {
-                    try {
-                        r = LIBC.symlink(targetPath,symlinkFile.getAbsolutePath());
-                        if (r!=0) {
-                            r = Native.getLastError();
-                            errmsg = LIBC.strerror(r);
-                        }
-                    } catch (LinkageError e) {
-                        // if JNA is unavailable, fall back.
-                        // we still prefer to try JNA first as PosixAPI supports even smaller platforms.
-                        POSIX posix = PosixAPI.jnr();
-                        if (posix.isNative()) {
-                            // TODO should we rethrow PosixException as IOException here?
-                            r = posix.symlink(targetPath,symlinkFile.getAbsolutePath());
-                        }
-                    }
-                }
-                if (r==null) {
-                    // if all else fail, fall back to the most expensive approach of forking a process
-                    // TODO is this really necessary? JavaPOSIX should do this automatically
-                    r = new LocalProc(new String[]{
-                        "ln","-s", targetPath, symlinkPath},
-                        new String[0],listener.getLogger(), baseDir).join();
-                }
-                if (r!=0)
-                    listener.getLogger().println(String.format("ln -s %s %s failed: %d %s",targetPath, symlinkFile, r, errmsg));
-            }
-        } catch (IOException e) {
-            PrintStream log = listener.getLogger();
-            log.printf("ln %s %s failed%n",targetPath, new File(baseDir, symlinkPath));
-            Util.displayIOException(e,listener);
-            e.printStackTrace( log );
-        }
-    }
-
-    private static boolean createSymlinkJava7(@Nonnull File baseDir, @Nonnull String targetPath, @Nonnull String symlinkPath) throws IOException {
-        try {
-            Path path = new File(baseDir, symlinkPath).toPath();
-            Path target = Paths.get(targetPath, new String[0]);
 
             final int maxNumberOfTries = 4;
             final int timeInMillis = 100;
             for (int tryNumber = 1; tryNumber <= maxNumberOfTries; tryNumber++) {
-                Files.deleteIfExists(path);
+                Files.deleteIfExists(pathForSymlink);
                 try {
-                    Files.createSymbolicLink(path, target);
+                    Files.createSymbolicLink(pathForSymlink, target);
                     break;
                 } catch (FileAlreadyExistsException fileAlreadyExistsException) {
                     if (tryNumber < maxNumberOfTries) {
                         TimeUnit.MILLISECONDS.sleep(timeInMillis); //trying to defeat likely ongoing race condition
                         continue;
                     }
-                    LOGGER.warning("symlink FileAlreadyExistsException thrown " + maxNumberOfTries + " times => cannot createSymbolicLink");
+                    LOGGER.log(Level.WARNING, "symlink FileAlreadyExistsException thrown {0} times => cannot createSymbolicLink", maxNumberOfTries);
                     throw fileAlreadyExistsException;
                 }
             }
-            return true;
         } catch (UnsupportedOperationException e) {
-                return true; // no symlinks on this platform
-        } catch (FileSystemException e) {
-            if (Functions.isWindows()) {
+            PrintStream log = listener.getLogger();
+            log.print("Symbolic links are not supported on this platform");
+            Functions.printStackTrace(e, log);
+        } catch (IOException e) {
+            if (Functions.isWindows() && e instanceof FileSystemException) {
                 warnWindowsSymlink();
-                return true;
+                return;
             }
-            return false;
-        } catch (IOException x) {
-            throw x;
-        } catch (Exception x) {
-            throw (IOException) new IOException(x.toString()).initCause(x);
+            PrintStream log = listener.getLogger();
+            log.printf("ln %s %s failed%n", targetPath, fileForSymlink);
+            Functions.printStackTrace(e, log);
         }
     }
 
@@ -1431,7 +1342,7 @@ public class Util {
      *      if the specified file is not a symlink.
      */
     @CheckForNull
-    public static File resolveSymlinkToFile(@Nonnull File link) throws InterruptedException, IOException {
+    public static File resolveSymlinkToFile(@NonNull File link) throws InterruptedException, IOException {
         String target = resolveSymlink(link);
         if (target==null)   return null;
 
@@ -1452,9 +1363,9 @@ public class Util {
      *      The relative path is meant to be resolved from the location of the symlink.
      */
     @CheckForNull
-    public static String resolveSymlink(@Nonnull File link) throws InterruptedException, IOException {
+    public static String resolveSymlink(@NonNull File link) throws IOException {
         try {
-            Path path =  link.toPath();
+            Path path = fileToPath(link);
             return Files.readSymbolicLink(path).toString();
         } catch (UnsupportedOperationException | FileSystemException x) {
             // no symlinks on this platform (windows?),
@@ -1464,7 +1375,7 @@ public class Util {
         } catch (IOException x) {
             throw x;
         } catch (Exception x) {
-            throw (IOException) new IOException(x.toString()).initCause(x);
+            throw new IOException(x);
         }
     }
 
@@ -1485,7 +1396,7 @@ public class Util {
         try {
             return new URI(null,url,null).toASCIIString();
         } catch (URISyntaxException e) {
-            LOGGER.warning("Failed to encode "+url);    // could this ever happen?
+            LOGGER.log(Level.WARNING, "Failed to encode {0}", url);    // could this ever happen?
             return url;
         }
     }
@@ -1494,8 +1405,8 @@ public class Util {
      * Wraps with the error icon and the CSS class to render error message.
      * @since 1.173
      */
-    @Nonnull
-    public static String wrapToErrorSpan(@Nonnull String s) {
+    @NonNull
+    public static String wrapToErrorSpan(@NonNull String s) {
         s = "<span class=error style='display:inline-block'>"+s+"</span>";
         return s;
     }
@@ -1521,36 +1432,78 @@ public class Util {
     }
 
     /**
-     * Checks if the method defined on the base type with the given arguments
-     * is overridden in the given derived type.
+     * Checks whether the method defined on the base type with the given arguments is overridden in the given derived
+     * type.
+     *
+     * @param base       The base type.
+     * @param derived    The derived type.
+     * @param methodName The name of the method.
+     * @param types      The types of the arguments for the method.
+     * @return {@code true} when {@code derived} provides the specified method other than as inherited from {@code base}.
+     * @throws IllegalArgumentException When {@code derived} does not derive from {@code base}, or when {@code base}
+     *                                  does not contain the specified method.
      */
-    public static boolean isOverridden(@Nonnull Class base, @Nonnull Class derived, @Nonnull String methodName, @Nonnull Class... types) {
-        return !getMethod(base, methodName, types).equals(getMethod(derived, methodName, types));
+    public static boolean isOverridden(@NonNull Class<?> base, @NonNull Class<?> derived, @NonNull String methodName, @NonNull Class<?>... types) {
+        // If derived is not a subclass or implementor of base, it can't override any method
+        // Technically this should also be triggered when base == derived, because it can't override its own method, but
+        // the unit tests explicitly test for that as working.
+        if (!base.isAssignableFrom(derived)) {
+            throw new IllegalArgumentException("The specified derived class (" + derived.getCanonicalName() + ") does not derive from the specified base class (" + base.getCanonicalName() + ").");
+        }
+        final Method baseMethod = Util.getMethod(base, null, methodName, types);
+        if (baseMethod == null) {
+            throw new IllegalArgumentException("The specified method is not declared by the specified base class (" + base.getCanonicalName() + "), or it is private, static or final.");
+        }
+        final Method derivedMethod = Util.getMethod(derived, base, methodName, types);
+        // the lookup will either return null or the base method when no override has been found (depending on whether
+        // the base is an interface)
+        return derivedMethod != null && derivedMethod != baseMethod;
     }
 
-    private static Method getMethod(@Nonnull Class clazz, @Nonnull String methodName, @Nonnull Class... types) {
-        Method res = null;
+    private static Method getMethod(@NonNull Class<?> clazz, @Nullable Class<?> base, @NonNull String methodName, @NonNull Class<?>... types) {
         try {
-            res = clazz.getDeclaredMethod(methodName, types);
-            // private, static or final methods can not be overridden
-            if (res != null && (Modifier.isPrivate(res.getModifiers()) || Modifier.isFinal(res.getModifiers()) 
-                    || Modifier.isStatic(res.getModifiers()))) {
-                res = null;
+            final Method res = clazz.getDeclaredMethod(methodName, types);
+            final int mod = res.getModifiers();
+            // private and static methods are never ok, and end the search
+            if (Modifier.isPrivate(mod) || Modifier.isStatic(mod)) {
+                return null;
             }
+            // when looking for the base/declaring method, final is not ok
+            if (base == null && Modifier.isFinal(mod)) {
+                return null;
+            }
+            // when looking for the overriding method, abstract is not ok
+            if (base != null && Modifier.isAbstract(mod)) {
+                return null;
+            }
+            return res;
         } catch (NoSuchMethodException e) {
-            // Method not found in clazz, let's search in superclasses
-            Class superclass = clazz.getSuperclass();
-            if (superclass != null) {
-                res = getMethod(superclass, methodName, types);
+            // If the base is an interface, the implementation may come from a default implementation on a derived
+            // interface. So look at interfaces too.
+            if (base != null && Modifier.isInterface(base.getModifiers())) {
+                for (Class<?> iface : clazz.getInterfaces()) {
+                    if (base.equals(iface) || !base.isAssignableFrom(iface)) {
+                        continue;
+                    }
+                    final Method defaultImpl = Util.getMethod(iface, base, methodName, types);
+                    if (defaultImpl != null) {
+                        return defaultImpl;
+                    }
+                }
             }
+            // Method not found in clazz, let's search in superclasses
+            Class<?> superclass = clazz.getSuperclass();
+            if (superclass != null) {
+                // if the superclass doesn't derive from base anymore (or IS base), stop looking
+                if (base != null && (base.equals(superclass) || !base.isAssignableFrom(superclass))) {
+                    return null;
+                }
+                return getMethod(superclass, base, methodName, types);
+            }
+            return null;
         } catch (SecurityException e) {
             throw new AssertionError(e);
         }
-        if (res == null) {
-            throw new IllegalArgumentException(
-                    String.format("Method %s not found in %s (or it is private, final or static)", methodName, clazz.getName()));
-        }
-        return res;
     }
 
     /**
@@ -1559,8 +1512,8 @@ public class Util {
      * @param ext
      *      For example, ".zip"
      */
-    @Nonnull
-    public static File changeExtension(@Nonnull File dst, @Nonnull String ext) {
+    @NonNull
+    public static File changeExtension(@NonNull File dst, @NonNull String ext) {
         String p = dst.getPath();
         int pos = p.lastIndexOf('.');
         if (pos<0)  return new File(p+ext);
@@ -1588,7 +1541,7 @@ public class Util {
     @Deprecated
     @RestrictedSince("1.651.2 / 2.TODO")
     @Restricted(NoExternalUse.class)
-    public static boolean isAbsoluteUri(@Nonnull String uri) {
+    public static boolean isAbsoluteUri(@NonNull String uri) {
         int idx = uri.indexOf(':');
         if (idx<0)  return false;   // no ':'. can't be absolute
 
@@ -1598,8 +1551,9 @@ public class Util {
 
     /**
      * Return true iff the parameter does not denote an absolute URI and not a scheme-relative URI.
+     * @since 2.3 / 1.651.2
      */
-    public static boolean isSafeToRedirectTo(@Nonnull String uri) {
+    public static boolean isSafeToRedirectTo(@NonNull String uri) {
         return !isAbsoluteUri(uri) && !uri.startsWith("//");
     }
 
@@ -1607,7 +1561,7 @@ public class Util {
      * Works like {@link String#indexOf(int)} but 'not found' is returned as s.length(), not -1.
      * This enables more straight-forward comparison.
      */
-    private static int _indexOf(@Nonnull String s, char ch) {
+    private static int _indexOf(@NonNull String s, char ch) {
         int idx = s.indexOf(ch);
         if (idx<0)  return s.length();
         return idx;
@@ -1617,11 +1571,115 @@ public class Util {
      * Loads a key/value pair string as {@link Properties}
      * @since 1.392
      */
-    @Nonnull
-    public static Properties loadProperties(@Nonnull String properties) throws IOException {
+    @NonNull
+    public static Properties loadProperties(@NonNull String properties) throws IOException {
         Properties p = new Properties();
         p.load(new StringReader(properties));
         return p;
+    }
+    
+    /**
+     * Closes the item and logs error to the log in the case of error.
+     * Logging will be performed on the {@code WARNING} level.
+     * @param toClose Item to close. Nothing will happen if it is {@code null}
+     * @param logger Logger, which receives the error
+     * @param closeableName Name of the closeable item
+     * @param closeableOwner String representation of the closeable holder
+     * @since 2.19, but TODO update once un-restricted
+     */
+    @Restricted(NoExternalUse.class)
+    public static void closeAndLogFailures(@CheckForNull Closeable toClose, @NonNull Logger logger, 
+            @NonNull String closeableName, @NonNull String closeableOwner) {
+        if (toClose == null) {
+            return;
+        }
+        try {
+            toClose.close();
+        } catch(IOException ex) {
+            LogRecord record = new LogRecord(Level.WARNING, "Failed to close {0} of {1}");
+            record.setParameters(new Object[] { closeableName, closeableOwner });
+            record.setThrown(ex);
+            logger.log(record);
+        }
+    }
+
+    @Restricted(NoExternalUse.class)
+    public static int permissionsToMode(Set<PosixFilePermission> permissions) {
+        PosixFilePermission[] allPermissions = PosixFilePermission.values();
+        int result = 0;
+        for (PosixFilePermission allPermission : allPermissions) {
+            result <<= 1;
+            result |= permissions.contains(allPermission) ? 1 : 0;
+        }
+        return result;
+    }
+
+    @Restricted(NoExternalUse.class)
+    public static Set<PosixFilePermission> modeToPermissions(int mode) throws IOException {
+         // Anything larger is a file type, not a permission.
+        int PERMISSIONS_MASK = 07777;
+        // setgid/setuid/sticky are not supported.
+        int MAX_SUPPORTED_MODE = 0777;
+        mode = mode & PERMISSIONS_MASK;
+        if ((mode & MAX_SUPPORTED_MODE) != mode) {
+            throw new IOException("Invalid mode: " + mode);
+        }
+        PosixFilePermission[] allPermissions = PosixFilePermission.values();
+        Set<PosixFilePermission> result = EnumSet.noneOf(PosixFilePermission.class);
+        for (int i = 0; i < allPermissions.length; i++) {
+            if ((mode & 1) == 1) {
+                result.add(allPermissions[allPermissions.length - i - 1]);
+            }
+            mode >>= 1;
+        }
+        return result;
+    }
+
+    /**
+     * Converts a {@link File} into a {@link Path} and checks runtime exceptions.
+     * @throws IOException if {@code f.toPath()} throws {@link InvalidPathException}.
+     */
+    @Restricted(NoExternalUse.class)
+    public static @NonNull Path fileToPath(@NonNull File file) throws IOException {
+        try {
+            return file.toPath();
+        } catch (InvalidPathException e) {
+            throw new IOException(e);
+        }
+    }
+    
+    /**
+     * Compute the number of calendar days elapsed since the given date.
+     * As it's only the calendar days difference that matter, "11.00pm" to "2.00am the day after" returns 1,
+     * even if there are only 3 hours between. As well as "10am" to "2pm" both on the same day, returns 0.
+     */
+    @Restricted(NoExternalUse.class)
+    public static long daysBetween(@NonNull Date a, @NonNull Date b){
+        LocalDate aLocal = a.toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
+        LocalDate bLocal = b.toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
+        return ChronoUnit.DAYS.between(aLocal, bLocal);
+    }
+    
+    /**
+     * @return positive number of days between the given date and now
+     * @see #daysBetween(Date, Date)
+     */
+    @Restricted(NoExternalUse.class)
+    public static long daysElapsedSince(@NonNull Date date){
+        return Math.max(0, daysBetween(date, new Date()));
+    }
+    
+    /**
+     * Find the specific ancestor, or throw an exception.
+     * Useful for an ancestor we know is inside the URL to ease readability
+     */
+    @Restricted(NoExternalUse.class)
+    public static @NonNull <T> T getNearestAncestorOfTypeOrThrow(@NonNull StaplerRequest request, @NonNull Class<T> clazz) {
+        T t = request.findAncestorObject(clazz);
+        if (t == null) {
+            throw new IllegalArgumentException("No ancestor of type " + clazz.getName() + " in the request");
+        }
+        return t;
     }
 
     public static final FastDateFormat XS_DATETIME_FORMATTER = FastDateFormat.getInstance("yyyy-MM-dd'T'HH:mm:ss'Z'",new SimpleTimeZone(0,"GMT"));
@@ -1640,10 +1698,10 @@ public class Util {
     public static boolean SYMLINK_ESCAPEHATCH = SystemProperties.getBoolean(Util.class.getName()+".symlinkEscapeHatch");
 
     /**
-     * The number of times we will attempt to delete files/directory trees
+     * The number of additional times we will attempt to delete files/directory trees
      * before giving up and throwing an exception.<br/>
-     * Specifying a value less than 1 is invalid and will be treated as if
-     * a value of 1 (i.e. one attempt, no retries) was specified.
+     * Specifying a value less than 0 is invalid and will be treated as if
+     * a value of 0 (i.e. one attempt, no retries) was specified.
      * <p>
      * e.g. if some of the child directories are big, it might take long enough
      * to delete that it allows others to create new files in the directory we
@@ -1654,25 +1712,25 @@ public class Util {
      * give up, thus improving build reliability.
      */
     @Restricted(value = NoExternalUse.class)
-    static int DELETION_MAX = Math.max(1, SystemProperties.getInteger(Util.class.getName() + ".maxFileDeletionRetries", 3).intValue());
+    static int DELETION_RETRIES = Math.max(0, SystemProperties.getInteger(Util.class.getName() + ".maxFileDeletionRetries", 2));
 
     /**
      * The time (in milliseconds) that we will wait between attempts to
      * delete files when retrying.<br>
-     * This has no effect unless {@link #DELETION_MAX} is non-zero.
+     * This has no effect unless {@link #DELETION_RETRIES} is non-zero.
      * <p>
      * If zero, we will not delay between attempts.<br>
      * If negative, we will wait an (linearly) increasing multiple of this value
      * between attempts.
      */
     @Restricted(value = NoExternalUse.class)
-    static int WAIT_BETWEEN_DELETION_RETRIES = SystemProperties.getInteger(Util.class.getName() + ".deletionRetryWait", 100).intValue();
+    static int WAIT_BETWEEN_DELETION_RETRIES = SystemProperties.getInteger(Util.class.getName() + ".deletionRetryWait", 100);
 
     /**
      * If this flag is set to true then we will request a garbage collection
      * after a deletion failure before we next retry the delete.<br>
-     * It defaults to <code>false</code> and is ignored unless
-     * {@link #DELETION_MAX} is greater than 1.
+     * It defaults to {@code false} and is ignored unless
+     * {@link #DELETION_RETRIES} is non zero.
      * <p>
      * Setting this flag to true <i>may</i> resolve some problems on Windows,
      * and also for directory trees residing on an NFS share, <b>but</b> it can
@@ -1682,13 +1740,28 @@ public class Util {
      * Warning: This should only ever be used if you find that your builds are
      * failing because Jenkins is unable to delete files, that this failure is
      * because Jenkins itself has those files locked "open", and even then it
-     * should only be used on slaves with relatively few executors (because the
+     * should only be used on agents with relatively few executors (because the
      * garbage collection can impact the performance of all job executors on
-     * that slave).<br/>
+     * that agent).<br/>
      * i.e. Setting this flag is a act of last resort - it is <em>not</em>
      * recommended, and should not be used on the main Jenkins server
      * unless you can tolerate the performance impact.
      */
     @Restricted(value = NoExternalUse.class)
     static boolean GC_AFTER_FAILED_DELETE = SystemProperties.getBoolean(Util.class.getName() + ".performGCOnFailedDelete");
+
+    private static PathRemover newPathRemover(@NonNull PathRemover.PathChecker pathChecker) {
+        return PathRemover.newFilteredRobustRemover(pathChecker, DELETION_RETRIES, GC_AFTER_FAILED_DELETE, WAIT_BETWEEN_DELETION_RETRIES);
+    }
+
+    /**
+     * If this flag is true, native implementations of {@link FilePath#chmod}
+     * and {@link hudson.util.IOUtils#mode} are used instead of NIO.
+     * <p>
+     * This should only be enabled if the setgid/setuid/sticky bits are
+     * intentionally set on the Jenkins installation and they are being
+     * overwritten by Jenkins erroneously.
+     */
+    @Restricted(value = NoExternalUse.class)
+    public static boolean NATIVE_CHMOD_MODE = SystemProperties.getBoolean(Util.class.getName() + ".useNativeChmodAndMode");
 }

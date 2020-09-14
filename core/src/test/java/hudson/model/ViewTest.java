@@ -13,14 +13,17 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 
 import javax.servlet.ServletException;
 
 import org.junit.Test;
+import org.jvnet.hudson.test.Issue;
 import org.kohsuke.stapler.StaplerRequest;
 import org.kohsuke.stapler.StaplerResponse;
 import org.mockito.Mockito;
+import org.powermock.reflect.Whitebox;
 
 public class ViewTest {
 
@@ -43,7 +46,7 @@ public class ViewTest {
         TopLevelItem item2 = Mockito.mock(TopLevelItem.class);
         Mockito.when(item2.getSearchUrl()).thenReturn(url2);
         Mockito.when(item2.getDisplayName()).thenReturn(displayName2);
-        Collection<TopLevelItem> items = new ArrayList<TopLevelItem>();
+        Collection<TopLevelItem> items = new ArrayList<>();
         items.add(item1);
         items.add(item2);
         
@@ -59,7 +62,7 @@ public class ViewTest {
         SearchIndex index = sib.make();
         
         // now make sure we can fetch item1 from the index
-        List<SearchItem> result = new ArrayList<SearchItem>();
+        List<SearchItem> result = new ArrayList<>();
         index.find(displayName1, result);
         assertEquals(1, result.size());
         SearchItem actual = result.get(0);
@@ -98,17 +101,89 @@ public class ViewTest {
         final TopLevelItem rightJob = createJob("rightJob");
 
         Mockito.when(leftView.getItems()).thenReturn(Arrays.asList(leftJob, sharedJob));
-        Mockito.when(rightView.getItems()).thenReturn(Arrays.asList(rightJob));
+        Mockito.when(rightView.getItems()).thenReturn(Collections.singletonList(rightJob));
 
         final TopLevelItem[] expected = new TopLevelItem[] {rootJob, sharedJob, leftJob, rightJob};
 
         assertArrayEquals(expected, rootView.getAllItems().toArray());
     }
 
+    @Test
+    @Issue("JENKINS-43322")
+    public void getAllViewsRecursively() {
+        //given
+        View left2ndNestedView = Mockito.mock(View.class);
+        View right2ndNestedView = Mockito.mock(View.class);
+        CompositeView rightNestedGroupView = new CompositeView("rightNestedGroupView", left2ndNestedView, right2ndNestedView);
+        //and
+        View leftTopLevelView = Mockito.mock(View.class);
+        CompositeView rootView = new CompositeView("rootGroupView", leftTopLevelView, rightNestedGroupView);
+        //when
+        Collection<View> allViews = rootView.getAllViews();
+        //then
+        assertEquals(4, allViews.size());
+    }
+
     private TopLevelItem createJob(String jobName) {
         final TopLevelItem rootJob = Mockito.mock(TopLevelItem.class);
         Mockito.when(rootJob.getDisplayName()).thenReturn(jobName);
         return rootJob;
+    }
+
+    @Test
+    public void buildQueueFiltering() throws Exception {
+        // Mimic a freestyle job
+        FreeStyleProject singleItemJob = Mockito.mock(FreeStyleProject.class);
+        Mockito.when(singleItemJob.getOwnerTask()).thenReturn(singleItemJob);
+        Queue.Item singleItemQueueItem = new MockItem(singleItemJob);
+
+        // Mimic pattern of a Matrix job, i.e. with root item in view and sub
+        // items in queue.
+        FreeStyleProject multiItemJob = Mockito.mock(FreeStyleProject.class);
+        Project multiItemSubJob = Mockito.mock(Project.class);
+        Mockito.when(multiItemSubJob.getRootProject()).thenReturn(multiItemJob);
+        Mockito.when(multiItemSubJob.getOwnerTask()).thenReturn(multiItemSubJob);
+        Queue.Item multiItemQueueItem = new MockItem(multiItemSubJob);
+
+        // Mimic pattern of a Pipeline job, i.e. with item in view and
+        // sub-steps in queue.
+        BuildableTopLevelItem multiStepJob
+                = Mockito.mock(BuildableTopLevelItem.class);
+        Mockito.when(multiStepJob.getOwnerTask()).thenReturn(multiStepJob);
+        BuildableItem multiStepSubStep = Mockito.mock(BuildableItem.class);
+        Mockito.when(multiStepSubStep.getOwnerTask()).thenReturn(multiStepJob);
+        Queue.Item multiStepQueueItem = new MockItem(multiStepSubStep);
+
+        // Construct the view
+        View view = Mockito.mock(View.class);
+        List<Queue.Item> queue = Arrays.asList(singleItemQueueItem,
+                multiItemQueueItem, multiStepQueueItem);
+        Mockito.when(view.isFilterQueue()).thenReturn(true);
+
+        // Positive test, ensure that queue items are included
+        List<TopLevelItem> viewJobs = Arrays.asList(singleItemJob, multiItemJob, multiStepJob);
+        Mockito.when(view.getItems()).thenReturn(viewJobs);
+        assertEquals(
+                Arrays.asList(singleItemQueueItem,
+                        multiItemQueueItem, multiStepQueueItem),
+                Whitebox.invokeMethod(view, "filterQueue", queue)
+        );
+
+        // Negative test, ensure that queue items are excluded
+        Mockito.when(view.getItems()).thenReturn(Collections.emptyList());
+        List<Queue.Item> expected = Arrays.asList(singleItemQueueItem,
+                multiItemQueueItem, multiStepQueueItem);
+        assertEquals(
+                Collections.emptyList(),
+                Whitebox.<List<Queue.Item>>invokeMethod(view, "filterQueue", queue)
+        );
+    }
+
+    /**
+     * This interface fulfills both TopLevelItem and BuildableItem interface,
+     * this allows it for being present in a view as well as the build queue!
+     */
+    private interface BuildableTopLevelItem extends TopLevelItem, BuildableItem {
     }
 
     public static class CompositeView extends View implements ViewGroup {
@@ -147,11 +222,6 @@ public class ViewTest {
 
         @Override
         public View getView(String name) {
-            return null;
-        }
-
-        @Override
-        public View getPrimaryView() {
             return null;
         }
 

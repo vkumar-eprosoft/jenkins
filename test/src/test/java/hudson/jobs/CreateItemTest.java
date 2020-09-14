@@ -23,8 +23,18 @@
  */
 package hudson.jobs;
 
-import static org.junit.Assert.*;
+import static org.hamcrest.Matchers.nullValue;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
+import static org.hamcrest.MatcherAssert.assertThat;
 
+import com.gargoylesoftware.htmlunit.Page;
+import hudson.model.Failure;
+import hudson.model.Item;
+import hudson.model.ItemGroup;
+import hudson.model.listeners.ItemListener;
+
+import java.net.HttpURLConnection;
 import java.net.URL;
 import java.text.MessageFormat;
 
@@ -34,11 +44,11 @@ import org.junit.Test;
 import org.jvnet.hudson.test.Issue;
 import org.jvnet.hudson.test.JenkinsRule;
 
-import com.gargoylesoftware.htmlunit.FailingHttpStatusCodeException;
 import com.gargoylesoftware.htmlunit.HttpMethod;
 import com.gargoylesoftware.htmlunit.WebRequest;
 import hudson.model.FreeStyleProject;
 import org.jvnet.hudson.test.MockFolder;
+import org.jvnet.hudson.test.TestExtension;
 
 /**
  * Tests the /createItem REST API.
@@ -46,7 +56,6 @@ import org.jvnet.hudson.test.MockFolder;
  * @author Christopher Simons
  */
 public class CreateItemTest {
-    private static final int ERROR_PRESET = (-1);
     @Rule
     public JenkinsRule rule = new JenkinsRule();
 
@@ -70,15 +79,39 @@ public class CreateItemTest {
 
         WebRequest request = new WebRequest(apiURL, HttpMethod.POST);
         deleteContentTypeHeader(request);
-        int result = ERROR_PRESET;
-        try {
-            result = rule.createWebClient()
-                .getPage(request).getWebResponse().getStatusCode();
-        } catch (FailingHttpStatusCodeException e) {
-            result = e.getResponse().getStatusCode();
-        }
 
-        assertEquals("Creating job from copy should succeed.", 200, result);
+        Page p = rule.createWebClient()
+                .withThrowExceptionOnFailingStatusCode(false)
+                .getPage(request);
+        assertEquals("Creating job from copy should succeed.",
+                HttpURLConnection.HTTP_OK,
+                p.getWebResponse().getStatusCode());
+    }
+
+    @Issue("JENKINS-34691")
+    @Test
+    public void vetoCreateItemFromCopy() throws Exception {
+        rule.jenkins.setCrumbIssuer(null);
+
+        String sourceJobName = "sourceJob";
+        rule.createFreeStyleProject(sourceJobName);
+
+        String newJobName = "newJob";
+        URL apiURL = new URL(MessageFormat.format(
+                    "{0}createItem?mode=copy&from={1}&name={2}",
+                    rule.getURL().toString(), sourceJobName, newJobName));
+
+        WebRequest request = new WebRequest(apiURL, HttpMethod.POST);
+        deleteContentTypeHeader(request);
+
+        Page p = rule.createWebClient()
+                .withThrowExceptionOnFailingStatusCode(false)
+                .getPage(request);
+
+        assertEquals("Creating job from copy should fail.", 
+                HttpURLConnection.HTTP_BAD_REQUEST, 
+                p.getWebResponse().getStatusCode());
+        assertThat(rule.jenkins.getItem("newJob"), nullValue());
     }
 
     private void deleteContentTypeHeader(WebRequest request) {
@@ -90,10 +123,24 @@ public class CreateItemTest {
         rule.jenkins.setCrumbIssuer(null);
         rule.createFolder("d1").createProject(FreeStyleProject.class, "p");
         MockFolder d2 = rule.createFolder("d2");
-        rule.createWebClient().getPage(new WebRequest(new URL(d2.getAbsoluteUrl() + "createItem?mode=copy&name=p2&from=../d1/p"), HttpMethod.POST));
+
+        JenkinsRule.WebClient wc = rule.createWebClient();
+
+        wc.getPage(new WebRequest(new URL(d2.getAbsoluteUrl() + "createItem?mode=copy&name=p2&from=../d1/p"), HttpMethod.POST));
         assertNotNull(d2.getItem("p2"));
-        rule.createWebClient().getPage(new WebRequest(new URL(d2.getAbsoluteUrl() + "createItem?mode=copy&name=p3&from=/d1/p"), HttpMethod.POST));
+
+        wc.getPage(new WebRequest(new URL(d2.getAbsoluteUrl() + "createItem?mode=copy&name=p3&from=/d1/p"), HttpMethod.POST));
         assertNotNull(d2.getItem("p3"));
+    }
+
+    @TestExtension("vetoCreateItemFromCopy")
+    public static class ItemListenerImpl extends ItemListener {
+        @Override
+        public void onCheckCopy(Item src, ItemGroup parent) throws Failure {
+            if ("sourceJob".equals(src.getName())) {
+                throw new Failure("Go away I don't like you");
+            }
+        }
     }
 
 }

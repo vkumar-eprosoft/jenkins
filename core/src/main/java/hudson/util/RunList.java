@@ -58,11 +58,11 @@ public class RunList<R extends Run> extends AbstractList<R> {
     }
 
     public RunList(View view) {// this is a type unsafe operation
-        Set<Job> jobs = new HashSet<Job>();
+        Set<Job> jobs = new HashSet<>();
         for (TopLevelItem item : view.getItems())
             jobs.addAll(item.getAllJobs());
 
-        List<Iterable<R>> runLists = new ArrayList<Iterable<R>>();
+        List<Iterable<R>> runLists = new ArrayList<>();
         for (Job job : jobs) {
             runLists.add(job.getBuilds());
         }
@@ -70,20 +70,34 @@ public class RunList<R extends Run> extends AbstractList<R> {
     }
 
     public RunList(Collection<? extends Job> jobs) {
-        List<Iterable<R>> runLists = new ArrayList<Iterable<R>>();
+        List<Iterable<R>> runLists = new ArrayList<>();
         for (Job j : jobs)
             runLists.add(j.getBuilds());
         this.base = combine(runLists);
     }
 
-    private Iterable<R> combine(Iterable<Iterable<R>> runLists) {
+    /**
+     * Creates a a {@link RunList} combining all the runs of the supplied jobs.
+     *
+     * @param jobs the supplied jobs.
+     * @param <J> the base class of job.
+     * @param <R> the base class of run.
+     * @return the run list.
+     * @since 2.37
+     */
+    public static <J extends Job<J,R>, R extends Run<J,R>> RunList<R> fromJobs(Iterable<? extends J> jobs) {
+        List<Iterable<R>> runLists = new ArrayList<>();
+        for (Job j : jobs)
+            runLists.add(j.getBuilds());
+        return new RunList<>(combine(runLists));
+    }
+
+    private static <R extends Run> Iterable<R> combine(Iterable<Iterable<R>> runLists) {
         return Iterables.mergeSorted(runLists, new Comparator<R>() {
             public int compare(R o1, R o2) {
                 long lhs = o1.getTimeInMillis();
                 long rhs = o2.getTimeInMillis();
-                if (lhs > rhs) return -1;
-                if (lhs < rhs) return 1;
-                return 0;
+                return Long.compare(rhs, lhs);
             }
         });
     }
@@ -132,9 +146,9 @@ public class RunList<R extends Run> extends AbstractList<R> {
      */
     @Override
     public List<R> subList(int fromIndex, int toIndex) {
-        List<R> r = new ArrayList<R>();
+        List<R> r = new ArrayList<>();
         Iterator<R> itr = iterator();
-        Iterators.skip(itr,fromIndex);
+        hudson.util.Iterators.skip(itr, fromIndex);
         for (int i=toIndex-fromIndex; i>0; i--) {
             r.add(itr.next());
         }

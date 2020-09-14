@@ -28,6 +28,7 @@ import com.sun.akuma.JavaVMArguments;
 import hudson.Launcher.LocalLauncher;
 import hudson.Util;
 import hudson.Extension;
+import hudson.Functions;
 import jenkins.util.SystemProperties;
 import hudson.os.SU;
 import hudson.model.AdministrativeMonitor;
@@ -107,7 +108,7 @@ public class ZFSInstaller extends AdministrativeMonitor implements Serializable 
                 return false;       // no active ZFS pool
 
             // if we don't run on a ZFS file system, activate
-            ZFSFileSystem hudsonZfs = zfs.getFileSystemByMountPoint(Jenkins.getInstance().getRootDir());
+            ZFSFileSystem hudsonZfs = zfs.getFileSystemByMountPoint(Jenkins.get().getRootDir());
             if(hudsonZfs!=null)
                 return false;       // already on ZFS
 
@@ -131,7 +132,7 @@ public class ZFSInstaller extends AdministrativeMonitor implements Serializable 
      */
     @RequirePOST
     public HttpResponse doAct(StaplerRequest req) throws ServletException, IOException {
-        Jenkins.getInstance().checkPermission(Jenkins.ADMINISTER);
+        Jenkins.get().checkPermission(Jenkins.ADMINISTER);
 
         if(req.hasParameter("n")) {
             // we'll shut up
@@ -164,13 +165,27 @@ public class ZFSInstaller extends AdministrativeMonitor implements Serializable 
             throw new IOException("Failed to obtain the current user information for "+uid);
         final String userName = pwd.pw_name;
 
-        final File home = Jenkins.getInstance().getRootDir();
+        final File home = Jenkins.get().getRootDir();
 
         // this is the actual creation of the file system.
         // return true indicating a success
-        return SU.execute(listener, rootUsername, rootPassword, new MasterToSlaveCallable<String,IOException>() {
+        return SU.execute(listener, rootUsername, rootPassword, new Create(listener, home, uid, gid, userName));
+    }
+    private static class Create extends MasterToSlaveCallable<String, IOException> {
+        private final TaskListener listener;
+        private final File home;
+        private final int uid;
+        private final int gid;
+        private final String userName;
+        Create(TaskListener listener, File home, int uid, int gid, String userName) {
+            this.listener = listener;
+            this.home = home;
+            this.uid = uid;
+            this.gid = gid;
+            this.userName = userName;
+        }
             private static final long serialVersionUID = 7731167233498214301L;
-
+            @Override
             public String call() throws IOException {
                 PrintStream out = listener.getLogger();
 
@@ -204,14 +219,13 @@ public class ZFSInstaller extends AdministrativeMonitor implements Serializable 
                     // revert the file system creation
                     try {
                         hudson.destory();
-                    } catch (Exception _) {
+                    } catch (Exception ignored) {
                         // but ignore the error and let the original error thrown
                     }
                     throw e;
                 }
                 return hudson.getName();
             }
-        });
     }
 
     /**
@@ -219,7 +233,7 @@ public class ZFSInstaller extends AdministrativeMonitor implements Serializable 
      */
     @RequirePOST
     public void doStart(StaplerRequest req, StaplerResponse rsp, @QueryParameter String username, @QueryParameter String password) throws ServletException, IOException {
-        Jenkins hudson = Jenkins.getInstance();
+        Jenkins hudson = Jenkins.get();
         hudson.checkPermission(Jenkins.ADMINISTER);
 
         final String datasetName;
@@ -228,7 +242,7 @@ public class ZFSInstaller extends AdministrativeMonitor implements Serializable 
         try {
             datasetName = createZfsFileSystem(listener,username,password);
         } catch (Exception e) {
-            e.printStackTrace(listener.error(e.getMessage()));
+            Functions.printStackTrace(e, listener.error(e.getMessage()));
 
             if (e instanceof ZFSException) {
                 ZFSException ze = (ZFSException) e;
@@ -292,7 +306,7 @@ public class ZFSInstaller extends AdministrativeMonitor implements Serializable 
                 }
             } catch (Exception e) {
                 // if we let any exception from here, it will prevent Hudson from starting.
-                e.printStackTrace(listener.error("Migration failed"));
+                Functions.printStackTrace(e, listener.error("Migration failed"));
             }
             // migration failed
             return new MigrationFailedNotice(out);
@@ -321,7 +335,7 @@ public class ZFSInstaller extends AdministrativeMonitor implements Serializable 
     private static boolean migrate(TaskListener listener, String target) throws IOException, InterruptedException {
         PrintStream out = listener.getLogger();
 
-        File home = Jenkins.getInstance().getRootDir();
+        File home = Jenkins.get().getRootDir();
         // do the migration
         LibZFS zfs = new LibZFS();
         ZFSFileSystem existing = zfs.getFileSystemByMountPoint(home);

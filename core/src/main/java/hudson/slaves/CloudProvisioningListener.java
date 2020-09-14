@@ -5,8 +5,12 @@ import hudson.ExtensionPoint;
 import hudson.model.Label;
 import hudson.model.Node;
 import hudson.model.queue.CauseOfBlockage;
+import jenkins.model.Jenkins;
 
 import java.util.Collection;
+import java.util.concurrent.Future;
+
+import edu.umd.cs.findbugs.annotations.NonNull;
 
 /**
  * Allows extensions to be notified of events in any {@link Cloud} and to prevent
@@ -29,7 +33,7 @@ public abstract class CloudProvisioningListener implements ExtensionPoint {
      *              May be null if provisioning for unlabeled builds.
      * @param numExecutors The number of executors needed.
      *
-     * @return <code>null</code> if provisioning can proceed, or a
+     * @return {@code null} if provisioning can proceed, or a
      * {@link CauseOfBlockage} reason why it cannot be provisioned.
      */
     public CauseOfBlockage canProvision(Cloud cloud, Label label, int numExecutors) {
@@ -53,7 +57,8 @@ public abstract class CloudProvisioningListener implements ExtensionPoint {
 
     /**
      * Called when the {@link NodeProvisioner.PlannedNode#future} completes.
-     * @param plannedNode the plannedNode which resulted in the <code>node</code> being provisioned
+     *
+     * @param plannedNode the plannedNode which resulted in the {@code node} being provisioned
      * @param node the node which has been provisioned by the cloud
      */
     public void onComplete(NodeProvisioner.PlannedNode plannedNode, Node node) {
@@ -61,13 +66,39 @@ public abstract class CloudProvisioningListener implements ExtensionPoint {
     }
 
     /**
-     * Called when {@link NodeProvisioner.PlannedNode#future#get()} throws an exception.
+     * Called when the {@code node}is fully connected in the Jenkins.
      *
-     * @param plannedNode the planned node which failed to launch
+     * @param plannedNode the plannedNode which resulted in the {@code node} being provisioned
+     * @param node the node which has been provisioned by the cloud
+     *
+     * @since 2.37
+     */
+    public void onCommit(@NonNull NodeProvisioner.PlannedNode plannedNode, @NonNull Node node) {
+        // Noop by default
+    }
+
+    /**
+     * Called when {@link NodeProvisioner.PlannedNode#future} {@link Future#get()} throws an exception.
+     *
+     * @param plannedNode the planned node which failed to provision
      * @param t the exception
      */
     public void onFailure(NodeProvisioner.PlannedNode plannedNode, Throwable t) {
 
+    }
+
+    /**
+     * Called when {@link Jenkins#addNode(Node)} throws an exception.
+     *
+     * @param plannedNode the plannedNode which resulted in the {@code node} being provisioned
+     * @param node the node which has been provisioned by the cloud
+     * @param t the exception
+     *
+     * @since 2.37
+     */
+    public void onRollback(@NonNull NodeProvisioner.PlannedNode plannedNode, @NonNull Node node,
+                           @NonNull Throwable t) {
+        // Noop by default
     }
 
     /**
@@ -76,5 +107,6 @@ public abstract class CloudProvisioningListener implements ExtensionPoint {
     public static ExtensionList<CloudProvisioningListener> all() {
         return ExtensionList.lookup(CloudProvisioningListener.class);
     }
+
 }
 

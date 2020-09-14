@@ -5,15 +5,14 @@ import hudson.ExtensionPoint;
 import hudson.remoting.Channel;
 import hudson.remoting.ChannelBuilder;
 import hudson.slaves.SlaveComputer;
-import jenkins.model.Jenkins;
 
-import javax.annotation.Nullable;
+import edu.umd.cs.findbugs.annotations.Nullable;
 
 /**
  * Intercepts the new creation of {@link Channel} and tweak its configuration.
  *
  * @author Kohsuke Kawaguchi
- * @since 1.THU
+ * @since 1.587 / 1.580.1
  */
 public abstract class ChannelConfigurator implements ExtensionPoint {
     /**
@@ -39,6 +38,6 @@ public abstract class ChannelConfigurator implements ExtensionPoint {
      * All the registered {@link ChannelConfigurator}s.
      */
     public static ExtensionList<ChannelConfigurator> all() {
-        return Jenkins.getInstance().getExtensionList(ChannelConfigurator.class);
+        return ExtensionList.lookup(ChannelConfigurator.class);
     }
 }

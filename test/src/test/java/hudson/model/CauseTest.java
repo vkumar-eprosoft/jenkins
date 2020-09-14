@@ -25,14 +25,25 @@
 package hudson.model;
 
 import hudson.XmlFile;
-import java.io.File;
+
+import java.io.*;
 import java.util.concurrent.Future;
 import java.util.regex.Pattern;
-import static org.junit.Assert.*;
+
+import static org.hamcrest.CoreMatchers.containsString;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.Assert.assertTrue;
+
+import hudson.util.StreamTaskListener;
+import org.junit.Assert;
 import org.junit.Rule;
 import org.junit.Test;
 import org.jvnet.hudson.test.Issue;
 import org.jvnet.hudson.test.JenkinsRule;
+import org.jvnet.hudson.test.recipes.LocalData;
+import org.xml.sax.SAXException;
 
 public class CauseTest {
 
@@ -79,4 +90,55 @@ public class CauseTest {
         //j.interactiveBreak();
     }
 
+
+    @Issue("JENKINS-48467")
+    @Test public void userIdCausePrintTest() throws Exception {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        TaskListener listener = new StreamTaskListener(baos);
+
+        //null userId - print unknown or anonymous
+        Cause causeA = new Cause.UserIdCause(null);
+        causeA.print(listener);
+
+        assertEquals(baos.toString().trim(),"Started by user unknown or anonymous");
+        baos.reset();
+
+        //SYSTEM userid  - getDisplayName() should be SYSTEM
+        Cause causeB = new Cause.UserIdCause();
+        causeB.print(listener);
+
+        assertThat(baos.toString(), containsString("SYSTEM"));
+        baos.reset();
+
+        //unknown userid - print unknown or anonymous
+        Cause causeC = new Cause.UserIdCause("abc123");
+        causeC.print(listener);
+
+        assertEquals(baos.toString().trim(),"Started by user unknown or anonymous");
+        baos.reset();
+
+        //More or less standard operation
+        //user userid  - getDisplayName() should be foo
+        User user = User.getById("foo", true);
+        Cause causeD = new Cause.UserIdCause(user.getId());
+        causeD.print(listener);
+
+        assertThat(baos.toString(), containsString(user.getDisplayName()));
+        baos.reset();
+    }
+
+    @Test
+    @Issue("SECURITY-1960")
+    @LocalData
+    public void xssInRemoteCause() throws IOException, SAXException {
+        final Item item = j.jenkins.getItemByFullName("fs");
+        Assert.assertTrue(item instanceof FreeStyleProject);
+        FreeStyleProject fs = (FreeStyleProject) item;
+        final FreeStyleBuild build = fs.getBuildByNumber(1);
+
+        final JenkinsRule.WebClient wc = j.createWebClient();
+        final String content = wc.getPage(build).getWebResponse().getContentAsString();
+        Assert.assertFalse(content.contains("Started by remote host <img"));
+        Assert.assertTrue(content.contains("Started by remote host &lt;img"));
+    }
 }

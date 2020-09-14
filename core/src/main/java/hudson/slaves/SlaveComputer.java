@@ -23,10 +23,11 @@
  */
 package hudson.slaves;
 
-import edu.umd.cs.findbugs.annotations.OverrideMustInvoke;
-import edu.umd.cs.findbugs.annotations.When;
 import hudson.AbortException;
 import hudson.FilePath;
+import hudson.Functions;
+import hudson.Main;
+import hudson.RestrictedSince;
 import hudson.Util;
 import hudson.console.ConsoleLogFilter;
 import hudson.model.Computer;
@@ -39,35 +40,46 @@ import hudson.model.TaskListener;
 import hudson.model.User;
 import hudson.remoting.Channel;
 import hudson.remoting.ChannelBuilder;
+import hudson.remoting.ChannelClosedException;
+import hudson.remoting.CommandTransport;
 import hudson.remoting.Launcher;
 import hudson.remoting.VirtualChannel;
 import hudson.security.ACL;
+import hudson.security.ACLContext;
 import hudson.slaves.OfflineCause.ChannelTermination;
 import hudson.util.Futures;
-import hudson.util.IOUtils;
 import hudson.util.NullStream;
 import hudson.util.RingBufferLogHandler;
 import hudson.util.StreamTaskListener;
-import hudson.util.io.ReopenableFileOutputStream;
-import hudson.util.io.ReopenableRotatingFileOutputStream;
+import hudson.util.VersionNumber;
+import hudson.util.io.RewindableFileOutputStream;
+import hudson.util.io.RewindableRotatingFileOutputStream;
+import jenkins.agents.AgentComputerUtil;
 import jenkins.model.Jenkins;
 import jenkins.security.ChannelConfigurator;
 import jenkins.security.MasterToSlaveCallable;
 import jenkins.slaves.EncryptedSlaveAgentJnlpFile;
-import jenkins.slaves.JnlpSlaveAgentProtocol;
+import jenkins.slaves.JnlpAgentReceiver;
+import jenkins.slaves.RemotingVersionInfo;
 import jenkins.slaves.systemInfo.SlaveSystemInfo;
-import org.acegisecurity.context.SecurityContext;
-import org.acegisecurity.context.SecurityContextHolder;
+import jenkins.util.SystemProperties;
+import org.kohsuke.accmod.Restricted;
+import org.kohsuke.accmod.restrictions.Beta;
+import org.kohsuke.accmod.restrictions.DoNotUse;
+import org.kohsuke.accmod.restrictions.NoExternalUse;
 import org.kohsuke.stapler.HttpRedirect;
 import org.kohsuke.stapler.HttpResponse;
 import org.kohsuke.stapler.QueryParameter;
 import org.kohsuke.stapler.StaplerRequest;
 import org.kohsuke.stapler.StaplerResponse;
 import org.kohsuke.stapler.WebMethod;
+import org.kohsuke.stapler.export.Exported;
 import org.kohsuke.stapler.interceptor.RequirePOST;
 
-import javax.annotation.CheckForNull;
-import javax.servlet.ServletException;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import edu.umd.cs.findbugs.annotations.CheckReturnValue;
+import edu.umd.cs.findbugs.annotations.NonNull;
+import edu.umd.cs.findbugs.annotations.OverrideMustInvoke;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
@@ -78,6 +90,8 @@ import java.security.Security;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.Future;
 import java.util.logging.Handler;
 import java.util.logging.Level;
@@ -85,6 +99,7 @@ import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
 import static hudson.slaves.SlaveComputer.LogHolder.SLAVE_LOG_HANDLER;
+import org.jenkinsci.remoting.util.LoggingChannelListener;
 
 
 /**
@@ -110,7 +125,7 @@ public class SlaveComputer extends Computer {
     /**
      * Perpetually writable log file.
      */
-    private final ReopenableFileOutputStream log;
+    private final RewindableFileOutputStream log;
 
     /**
      * {@link StreamTaskListener} that wraps {@link #log}, hence perpetually writable.
@@ -137,7 +152,7 @@ public class SlaveComputer extends Computer {
 
     public SlaveComputer(Slave slave) {
         super(slave);
-        this.log = new ReopenableRotatingFileOutputStream(getLogFile(),10);
+        this.log = new RewindableRotatingFileOutputStream(getLogFile(), 10);
         this.taskListener = new StreamTaskListener(decorate(this.log));
         assert slave.getNumExecutors()!=0 : "Computer created with 0 executors";
     }
@@ -156,11 +171,8 @@ public class SlaveComputer extends Computer {
         return os;
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
-    @OverrideMustInvoke(When.ANYTIME)
+    @OverrideMustInvoke
     public boolean isAcceptingTasks() {
         // our boolean flag is an override on any additional programmatic reasons why this agent might not be
         // accepting tasks.
@@ -171,7 +183,7 @@ public class SlaveComputer extends Computer {
      * @since 1.498
      */
     public String getJnlpMac() {
-        return JnlpSlaveAgentProtocol.SLAVE_SECRET.mac(getName());
+        return JnlpAgentReceiver.SLAVE_SECRET.mac(getName());
     }
 
     /**
@@ -204,6 +216,14 @@ public class SlaveComputer extends Computer {
         }
     }
 
+    /**
+     * Return the {@link TaskListener} for this SlaveComputer. Never null
+     * @since 2.9
+     */
+    public TaskListener getListener() {
+        return taskListener;
+    }
+
     @Override
     public String getIcon() {
         Future<?> l = lastConnectActivity;
@@ -225,8 +245,31 @@ public class SlaveComputer extends Computer {
         return launcher.isLaunchSupported();
     }
 
+    /**
+     * Return the {@link ComputerLauncher} for this SlaveComputer.
+     * @since 1.312
+     */
     public ComputerLauncher getLauncher() {
         return launcher;
+    }
+
+    /**
+     * Return the {@link ComputerLauncher} for this SlaveComputer, strips off
+     * any {@link DelegatingComputerLauncher}s or {@link ComputerLauncherFilter}s.
+     * @since 2.83
+     */
+    public ComputerLauncher getDelegatedLauncher() {
+        ComputerLauncher l = launcher;
+        while (true) {
+            if (l instanceof DelegatingComputerLauncher) {
+                l = ((DelegatingComputerLauncher) l).getLauncher();
+            } else if (l instanceof ComputerLauncherFilter) {
+                l = ((ComputerLauncherFilter) l).getCore();
+            } else {
+                break;
+            }
+        }
+        return l;
     }
 
     protected Future<?> _connect(boolean forceReconnect) {
@@ -237,52 +280,50 @@ public class SlaveComputer extends Computer {
             logger.fine("Forcing a reconnect on "+getName());
 
         closeChannel();
-        return lastConnectActivity = Computer.threadPoolForRemoting.submit(new java.util.concurrent.Callable<Object>() {
-            public Object call() throws Exception {
-                // do this on another thread so that the lengthy launch operation
-                // (which is typical) won't block UI thread.
+        Throwable threadInfo = new Throwable("launched here");
+        return lastConnectActivity = Computer.threadPoolForRemoting.submit(() -> {
+            // do this on another thread so that the lengthy launch operation
+            // (which is typical) won't block UI thread.
 
-                ACL.impersonate(ACL.SYSTEM);    // background activity should run like a super user
-
+            try (ACLContext ctx = ACL.as(ACL.SYSTEM)) {// background activity should run like a super user
+                log.rewind();
                 try {
-                    log.rewind();
-                    try {
-                        for (ComputerListener cl : ComputerListener.all())
-                            cl.preLaunch(SlaveComputer.this, taskListener);
-                        offlineCause = null;
-                        launcher.launch(SlaveComputer.this, taskListener);
-                    } catch (AbortException e) {
-                        taskListener.error(e.getMessage());
-                        throw e;
-                    } catch (IOException e) {
-                        Util.displayIOException(e,taskListener);
-                        e.printStackTrace(taskListener.error(Messages.ComputerLauncher_unexpectedError()));
-                        throw e;
-                    } catch (InterruptedException e) {
-                        e.printStackTrace(taskListener.error(Messages.ComputerLauncher_abortedLaunch()));
-                        throw e;
-                    } catch (Exception e) {
-                        e.printStackTrace(taskListener.error(Messages.ComputerLauncher_unexpectedError()));
-                        throw e;
-                    }
-                } finally {
-                    if (channel==null && offlineCause == null) {
-                        offlineCause = new OfflineCause.LaunchFailed();
-                        for (ComputerListener cl : ComputerListener.all())
-                            cl.onLaunchFailure(SlaveComputer.this, taskListener);
-                    }
+                    for (ComputerListener cl : ComputerListener.all())
+                        cl.preLaunch(SlaveComputer.this, taskListener);
+                    offlineCause = null;
+                    launcher.launch(SlaveComputer.this, taskListener);
+                } catch (AbortException e) {
+                    e.addSuppressed(threadInfo);
+                    taskListener.error(e.getMessage());
+                    throw e;
+                } catch (IOException e) {
+                    e.addSuppressed(threadInfo);
+                    Util.displayIOException(e,taskListener);
+                    Functions.printStackTrace(e, taskListener.error(Messages.ComputerLauncher_unexpectedError()));
+                    throw e;
+                } catch (InterruptedException e) {
+                    e.addSuppressed(threadInfo);
+                    Functions.printStackTrace(e, taskListener.error(Messages.ComputerLauncher_abortedLaunch()));
+                    throw e;
+                } catch (Exception e) {
+                    e.addSuppressed(threadInfo);
+                    Functions.printStackTrace(e, taskListener.error(Messages.ComputerLauncher_unexpectedError()));
+                    throw e;
                 }
-
-                if (channel==null)
-                    throw new IOException("Agent failed to connect, even though the launcher didn't report it. See the log output for details.");
-                return null;
+            } finally {
+                if (channel==null && offlineCause == null) {
+                    offlineCause = new OfflineCause.LaunchFailed();
+                    for (ComputerListener cl : ComputerListener.all())
+                        cl.onLaunchFailure(SlaveComputer.this, taskListener);
+                }
             }
+
+            if (channel==null)
+                throw new IOException("Agent failed to connect, even though the launcher didn't report it. See the log output for details.");
+            return null;
         });
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
     public void taskAccepted(Executor executor, Queue.Task task) {
         super.taskAccepted(executor, task);
@@ -297,9 +338,6 @@ public class SlaveComputer extends Computer {
         }
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
     public void taskCompleted(Executor executor, Queue.Task task, long durationMS) {
         super.taskCompleted(executor, task, durationMS);
@@ -312,9 +350,6 @@ public class SlaveComputer extends Computer {
         }
     }
 
-    /**
-     * {@inheritDoc}
-     */
     @Override
     public void taskCompletedWithProblems(Executor executor, Queue.Task task, long durationMS, Throwable problems) {
         super.taskCompletedWithProblems(executor, task, durationMS, problems);
@@ -345,7 +380,15 @@ public class SlaveComputer extends Computer {
 
     private final Object channelLock = new Object();
 
-    public void setChannel(InputStream in, OutputStream out, TaskListener taskListener, Channel.Listener listener) throws IOException, InterruptedException {
+    /**
+     * Creates a {@link Channel} from the given stream and sets that to this agent.
+     *
+     * Same as {@link #setChannel(InputStream, OutputStream, OutputStream, Channel.Listener)}, but for
+     * {@link TaskListener}.
+     */
+    public void setChannel(@NonNull InputStream in, @NonNull OutputStream out,
+                           @NonNull TaskListener taskListener,
+                           @CheckForNull Channel.Listener listener) throws IOException, InterruptedException {
         setChannel(in,out,taskListener.getLogger(),listener);
     }
 
@@ -353,13 +396,13 @@ public class SlaveComputer extends Computer {
      * Creates a {@link Channel} from the given stream and sets that to this agent.
      *
      * @param in
-     *      Stream connected to the remote "slave.jar". It's the caller's responsibility to do
+     *      Stream connected to the remote agent. It's the caller's responsibility to do
      *      buffering on this stream, if that's necessary.
      * @param out
      *      Stream connected to the remote peer. It's the caller's responsibility to do
      *      buffering on this stream, if that's necessary.
      * @param launchLog
-     *      If non-null, receive the portion of data in <tt>is</tt> before
+     *      If non-null, receive the portion of data in {@code is} before
      *      the data goes into the "binary mode". This is useful
      *      when the established communication channel might include some data that might
      *      be useful for debugging/trouble-shooting.
@@ -368,7 +411,9 @@ public class SlaveComputer extends Computer {
      *      By the time this method is called, the cause of the termination is reported to the user,
      *      so the implementation of the listener doesn't need to do that again.
      */
-    public void setChannel(InputStream in, OutputStream out, OutputStream launchLog, Channel.Listener listener) throws IOException, InterruptedException {
+    public void setChannel(@NonNull InputStream in, @NonNull OutputStream out,
+                           @CheckForNull OutputStream launchLog,
+                           @CheckForNull Channel.Listener listener) throws IOException, InterruptedException {
         ChannelBuilder cb = new ChannelBuilder(nodeName,threadPoolForRemoting)
             .withMode(Channel.Mode.NEGOTIATE)
             .withHeaderStream(launchLog);
@@ -382,19 +427,61 @@ public class SlaveComputer extends Computer {
     }
 
     /**
+     * Creates a {@link Channel} from the given Channel Builder and Command Transport.
+     * This method can be used to allow {@link ComputerLauncher}s to create channels not based on I/O streams.
+     *
+     * @param cb
+     *      Channel Builder.
+     *      To print launch logs this channel builder should have a Header Stream defined
+     *      (see {@link ChannelBuilder#getHeaderStream()}) in this argument or by one of {@link ChannelConfigurator}s.
+     * @param commandTransport
+     *      Command Transport
+     * @param listener
+     *      Gets a notification when the channel closes, to perform clean up. Can be {@code null}.
+     *      By the time this method is called, the cause of the termination is reported to the user,
+     *      so the implementation of the listener doesn't need to do that again.
+     * @since 2.127
+     */
+    @Restricted(Beta.class)
+    public void setChannel(@NonNull ChannelBuilder cb,
+                           @NonNull CommandTransport commandTransport,
+                           @CheckForNull Channel.Listener listener) throws IOException, InterruptedException {
+        for (ChannelConfigurator cc : ChannelConfigurator.all()) {
+            cc.onChannelBuilding(cb,this);
+        }
+
+        OutputStream headerStream = cb.getHeaderStream();
+        if (headerStream == null) {
+            LOGGER.log(Level.WARNING, "No header stream defined when setting channel for computer {0}. " +
+                    "Launch log won't be printed", this);
+        }
+        Channel channel = cb.build(commandTransport);
+        setChannel(channel, headerStream, listener);
+    }
+
+    /**
      * Shows {@link Channel#classLoadingCount}.
+     * @return Requested value or {@code -1} if the agent is offline.
      * @since 1.495
      */
+    @CheckReturnValue
     public int getClassLoadingCount() throws IOException, InterruptedException {
+        if (channel == null) {
+            return -1;
+        }
         return channel.call(new LoadingCount(false));
     }
 
     /**
      * Shows {@link Channel#classLoadingPrefetchCacheCount}.
-     * @return -1 in case that capability is not supported
+     * @return Requested value or {@code -1} in case that capability is not supported or if the agent is offline.
      * @since 1.519
      */
+    @CheckReturnValue
     public int getClassLoadingPrefetchCacheCount() throws IOException, InterruptedException {
+        if (channel == null) {
+            return -1;
+        }
         if (!channel.remoteCapability.supportsPrefetch()) {
             return -1;
         }
@@ -403,25 +490,40 @@ public class SlaveComputer extends Computer {
 
     /**
      * Shows {@link Channel#resourceLoadingCount}.
+     * @return Requested value or {@code -1} if the agent is offline.
      * @since 1.495
      */
+    @CheckReturnValue
     public int getResourceLoadingCount() throws IOException, InterruptedException {
+        if (channel == null) {
+            return -1;
+        }
         return channel.call(new LoadingCount(true));
     }
 
     /**
      * Shows {@link Channel#classLoadingTime}.
+     * @return Requested value or {@code -1} if the agent is offline.
      * @since 1.495
      */
+    @CheckReturnValue
     public long getClassLoadingTime() throws IOException, InterruptedException {
+        if (channel == null) {
+            return -1;
+        }
         return channel.call(new LoadingTime(false));
     }
 
     /**
      * Shows {@link Channel#resourceLoadingTime}.
+     * @return Requested value or {@code -1} if the agent is offline.
      * @since 1.495
      */
+    @CheckReturnValue
     public long getResourceLoadingTime() throws IOException, InterruptedException {
+        if (channel == null) {
+            return -1;
+        }
         return channel.call(new LoadingTime(true));
     }
 
@@ -438,6 +540,26 @@ public class SlaveComputer extends Computer {
         return channel == null ? null : absoluteRemoteFs;
     }
 
+    /**
+     * Just for restFul api.
+     * Returns the remote FS root absolute path or {@code null} if the agent is off-line. The absolute path may change
+     * between connections if the connection method does not provide a consistent working directory and the node's
+     * remote FS is specified as a relative path.
+     * @see #getAbsoluteRemoteFs()
+     * @return the remote FS root absolute path or {@code null} if the agent is off-line or don't have connect permission.
+     * @since 2.125
+     */
+    @Exported
+    @Restricted(DoNotUse.class)
+    @CheckForNull
+    public String getAbsoluteRemotePath() {
+        if(hasPermission(CONNECT)) {
+            return getAbsoluteRemoteFs();
+        } else {
+            return null;
+        }
+    }
+
     static class LoadingCount extends MasterToSlaveCallable<Integer,RuntimeException> {
         private final boolean resource;
         LoadingCount(boolean resource) {
@@ -445,13 +567,20 @@ public class SlaveComputer extends Computer {
         }
         @Override public Integer call() {
             Channel c = Channel.current();
+            if (c == null) {
+                return -1;
+            }
             return resource ? c.resourceLoadingCount.get() : c.classLoadingCount.get();
         }
     }
 
     static class LoadingPrefetchCacheCount extends MasterToSlaveCallable<Integer,RuntimeException> {
         @Override public Integer call() {
-            return Channel.current().classLoadingPrefetchCacheCount.get();
+            Channel c = Channel.current();
+            if (c == null) {
+                return -1;
+            }
+            return c.classLoadingPrefetchCacheCount.get();
         }
     }
 
@@ -462,31 +591,38 @@ public class SlaveComputer extends Computer {
         }
         @Override public Long call() {
             Channel c = Channel.current();
+            if (c == null) {
+                return -1L;
+            }
             return resource ? c.resourceLoadingTime.get() : c.classLoadingTime.get();
         }
     }
 
     /**
      * Sets up the connection through an existing channel.
-     * @param channel the channel to use; <strong>warning:</strong> callers are expected to have called {@link ChannelConfigurator} already
+     * @param channel the channel to use; <strong>warning:</strong> callers are expected to have called {@link ChannelConfigurator} already.
+     * @param launchLog Launch log. If not {@code null}, will receive launch log messages
+     * @param listener Channel event listener to be attached (if not {@code null})
      * @since 1.444
      */
-    public void setChannel(Channel channel, OutputStream launchLog, Channel.Listener listener) throws IOException, InterruptedException {
+    public void setChannel(@NonNull Channel channel,
+                           @CheckForNull OutputStream launchLog,
+                           @CheckForNull Channel.Listener listener) throws IOException, InterruptedException {
         if(this.channel!=null)
             throw new IllegalStateException("Already connected");
 
-        final TaskListener taskListener = new StreamTaskListener(launchLog);
+        final TaskListener taskListener = launchLog != null ? new StreamTaskListener(launchLog) : TaskListener.NULL;
         PrintStream log = taskListener.getLogger();
 
         channel.setProperty(SlaveComputer.class, this);
 
-        channel.addListener(new Channel.Listener() {
+        channel.addListener(new LoggingChannelListener(logger, Level.FINEST) {
             @Override
             public void onClosed(Channel c, IOException cause) {
                 // Orderly shutdown will have null exception
                 if (cause!=null) {
                     offlineCause = new ChannelTermination(cause);
-                    cause.printStackTrace(taskListener.error("Connection terminated"));
+                    Functions.printStackTrace(cause, taskListener.error("Connection terminated"));
                 } else {
                     taskListener.getLogger().println("Connection terminated");
                 }
@@ -506,7 +642,13 @@ public class SlaveComputer extends Computer {
             channel.addListener(listener);
 
         String slaveVersion = channel.call(new SlaveVersion());
-        log.println("Slave.jar version: " + slaveVersion);
+        log.println("Remoting version: " + slaveVersion);
+        VersionNumber agentVersion = new VersionNumber(slaveVersion);
+        if (agentVersion.isOlderThan(RemotingVersionInfo.getMinimumSupportedVersion())) {
+            log.println(String.format("WARNING: Remoting version is older than a minimum required one (%s). " +
+                    "Connection will not be rejected, but the compatibility is NOT guaranteed",
+                    RemotingVersionInfo.getMinimumSupportedVersion()));
+        }
 
         boolean _isUnix = channel.call(new DetectOS());
         log.println(_isUnix? hudson.model.Messages.Slave_UnixSlave():hudson.model.Messages.Slave_WindowsSlave());
@@ -533,14 +675,11 @@ public class SlaveComputer extends Computer {
         // it'll have a catastrophic impact on the communication.
         channel.pinClassLoader(getClass().getClassLoader());
 
-        channel.call(new SlaveInitializer());
-        SecurityContext old = ACL.impersonate(ACL.SYSTEM);
-        try {
+        channel.call(new SlaveInitializer(DEFAULT_RING_BUFFER_SIZE));
+        try (ACLContext ctx = ACL.as(ACL.SYSTEM)) {
             for (ComputerListener cl : ComputerListener.all()) {
                 cl.preOnline(this,channel,root,taskListener);
             }
-        } finally {
-            SecurityContextHolder.setContext(old);
         }
 
         offlineCause = null;
@@ -548,7 +687,7 @@ public class SlaveComputer extends Computer {
         // update the data structure atomically to prevent others from seeing a channel that's not properly initialized yet
         synchronized(channelLock) {
             if(this.channel!=null) {
-                // check again. we used to have this entire method in a big sycnhronization block,
+                // check again. we used to have this entire method in a big synchronization block,
                 // but Channel constructor blocks for an external process to do the connection
                 // if CommandLauncher is used, and that cannot be interrupted because it blocks at InputStream.
                 // so if the process hangs, it hangs the thread in a lock, and since Hudson will try to relaunch,
@@ -567,16 +706,25 @@ public class SlaveComputer extends Computer {
                 statusChangeLock.notifyAll();
             }
         }
-        old = ACL.impersonate(ACL.SYSTEM);
-        try {
+        try (ACLContext ctx = ACL.as(ACL.SYSTEM)) {
             for (ComputerListener cl : ComputerListener.all()) {
-                cl.onOnline(this,taskListener);
+                try {
+                    cl.onOnline(this,taskListener);
+                } catch (Exception e) {
+                    // Per Javadoc log exceptions but still go online.
+                    // NOTE: this does not include Errors, which indicate a fatal problem
+                    taskListener.getLogger().format(
+                        "onOnline: %s reported an exception: %s%n",
+                        cl.getClass(),
+                        e.toString());
+                } catch (Throwable e) {
+                    closeChannel();
+                    throw e;
+                }
             }
-        } finally {
-            SecurityContextHolder.setContext(old);
         }
         log.println("Agent successfully connected and online");
-        Jenkins.getInstance().getQueue().scheduleMaintenance();
+        Jenkins.get().getQueue().scheduleMaintenance();
     }
 
     @Override
@@ -596,7 +744,7 @@ public class SlaveComputer extends Computer {
     }
 
     @RequirePOST
-    public HttpResponse doDoDisconnect(@QueryParameter String offlineMessage) throws IOException, ServletException {
+    public HttpResponse doDoDisconnect(@QueryParameter String offlineMessage) {
         if (channel!=null) {
             //does nothing in case computer is already disconnected
             checkPermission(DISCONNECT);
@@ -621,9 +769,18 @@ public class SlaveComputer extends Computer {
     }
 
     @RequirePOST
-    public void doLaunchSlaveAgent(StaplerRequest req, StaplerResponse rsp) throws IOException, ServletException {
+    @Override
+    public void doLaunchSlaveAgent(StaplerRequest req, StaplerResponse rsp) throws IOException {
+        checkPermission(CONNECT);
+
         if(channel!=null) {
-            req.getView(this,"already-launched.jelly").forward(req, rsp);
+            try {
+                req.getView(this, "already-launched.jelly").forward(req, rsp);
+            } catch (IOException x) {
+                throw x;
+            } catch (/*Servlet*/Exception x) {
+                throw new IOException(x);
+            }
             return;
         }
 
@@ -644,11 +801,11 @@ public class SlaveComputer extends Computer {
     }
 
     /**
-     * Serves jar files for JNLP agents.
+     * Serves jar files for inbound agents.
      *
      * @deprecated since 2008-08-18.
      *      This URL binding is no longer used and moved up directly under to {@link jenkins.model.Jenkins},
-     *      but it's left here for now just in case some old JNLP agents request it.
+     *      but it's left here for now just in case some old inbound agents request it.
      */
     @Deprecated
     public Slave.JnlpJar getJnlpJars(String fileName) {
@@ -656,15 +813,37 @@ public class SlaveComputer extends Computer {
     }
 
     @WebMethod(name="slave-agent.jnlp")
-    public HttpResponse doSlaveAgentJnlp(StaplerRequest req, StaplerResponse res) throws IOException, ServletException {
+    public HttpResponse doSlaveAgentJnlp(StaplerRequest req, StaplerResponse res) {
         return new EncryptedSlaveAgentJnlpFile(this, "slave-agent.jnlp.jelly", getName(), CONNECT);
+    }
+
+    class LowPermissionResponse {
+        @WebMethod(name="slave-agent.jnlp")
+        public HttpResponse doSlaveAgentJnlp(StaplerRequest req, StaplerResponse res) {
+            return SlaveComputer.this.doSlaveAgentJnlp(req, res);
+        }
+    }
+
+    @Override
+    @Restricted(NoExternalUse.class)
+    public Object getTarget() {
+        if (!SKIP_PERMISSION_CHECK) {
+            if (!Jenkins.get().hasPermission(Jenkins.READ)) {
+                return new LowPermissionResponse();
+            }
+        }
+        return this;
     }
 
     @Override
     protected void kill() {
         super.kill();
         closeChannel();
-        IOUtils.closeQuietly(log);
+        try {
+            log.close();
+        } catch (IOException x) {
+            LOGGER.log(Level.WARNING, "Failed to close agent log", x);
+        }
 
         try {
             Util.deleteRecursive(getLogDir());
@@ -675,7 +854,7 @@ public class SlaveComputer extends Computer {
 
     public RetentionStrategy getRetentionStrategy() {
         Slave n = getNode();
-        return n==null ? RetentionStrategy.INSTANCE : n.getRetentionStrategy();
+        return n==null ? RetentionStrategy.NOOP : n.getRetentionStrategy();
     }
 
     /**
@@ -742,15 +921,50 @@ public class SlaveComputer extends Computer {
     /**
      * Get the agent version
      */
+    @CheckReturnValue
     public String getSlaveVersion() throws IOException, InterruptedException {
+        if (channel == null) {
+            return "Unknown (agent is offline)";
+        }
         return channel.call(new SlaveVersion());
     }
 
     /**
      * Get the OS description.
      */
+    @CheckReturnValue
     public String getOSDescription() throws IOException, InterruptedException {
+        if (channel == null) {
+            return "Unknown (agent is offline)";
+        }
         return channel.call(new DetectOS()) ? "Unix" : "Windows";
+    }
+
+    /**
+     * Expose real full env vars map from agent for UI presentation
+     */
+    @CheckReturnValue
+    public Map<String,String> getEnvVarsFull() throws IOException, InterruptedException {
+        if (channel == null) {
+            Map<String, String> env = new TreeMap<> ();
+            env.put("N/A","N/A");
+            return env;
+        } else {
+            return channel.call(new ListFullEnvironment());
+        }
+    }
+
+    private static class ListFullEnvironment extends MasterToSlaveCallable<Map<String,String>,IOException> {
+        public Map<String,String> call() throws IOException {
+            Map<String, String> env = new TreeMap<>(System.getenv());
+            if(Main.isUnitTest || Main.isDevelopmentMode) {
+                // if unit test is launched with maven debug switch,
+                // we need to prevent forked Maven processes from seeing it, or else
+                // they'll hang
+                env.remove("MAVEN_OPTS");
+            }
+            return env;
+        }
     }
 
     private static final Logger logger = Logger.getLogger(SlaveComputer.class.getName());
@@ -758,7 +972,7 @@ public class SlaveComputer extends Computer {
     private static final class SlaveVersion extends MasterToSlaveCallable<String,IOException> {
         public String call() throws IOException {
             try { return Launcher.VERSION; }
-            catch (Throwable ex) { return "< 1.335"; } // Older slave.jar won't have VERSION
+            catch (Throwable ex) { return "< 1.335"; } // Older agent.jar won't have VERSION
         }
     }
     private static final class DetectOS extends MasterToSlaveCallable<Boolean,IOException> {
@@ -796,12 +1010,20 @@ public class SlaveComputer extends Computer {
         /**
          * This field is used on each agent to record logs on the agent.
          */
-        static final RingBufferLogHandler SLAVE_LOG_HANDLER = new RingBufferLogHandler();
+        static RingBufferLogHandler SLAVE_LOG_HANDLER;
     }
 
     private static class SlaveInitializer extends MasterToSlaveCallable<Void,RuntimeException> {
+        final int ringBufferSize;
+
+        public SlaveInitializer(int ringBufferSize) {
+            this.ringBufferSize = ringBufferSize;
+        }
+
         public Void call() {
-            // avoid double installation of the handler. JNLP slaves can reconnect to the master multiple times
+            SLAVE_LOG_HANDLER = new RingBufferLogHandler(ringBufferSize);
+
+            // avoid double installation of the handler. Inbound agents can reconnect to the master multiple times
             // and each connection gets a different RemoteClassLoader, so we need to evict them by class name,
             // not by their identity.
             for (Handler h : LOGGER.getHandlers()) {
@@ -817,7 +1039,11 @@ public class SlaveComputer extends Computer {
                 // ignore this error.
             }
 
-            Channel.current().setProperty("slave",Boolean.TRUE); // indicate that this side of the channel is the slave side.
+            try {
+                getChannelOrFail().setProperty("slave",Boolean.TRUE); // indicate that this side of the channel is the agent side.
+            } catch (ChannelClosedException e) {
+                throw new IllegalStateException(e);
+            }
 
             return null;
         }
@@ -833,31 +1059,30 @@ public class SlaveComputer extends Computer {
      *
      * @return null if the calling thread doesn't have any trace of where its master is.
      * @since 1.362
+     * @deprecated Use {@link AgentComputerUtil#getChannelToMaster()} instead.
      */
+    @Deprecated
     public static VirtualChannel getChannelToMaster() {
-        if (Jenkins.getInstanceOrNull()!=null) // check if calling thread is on master or on slave
-            return FilePath.localChannel;
-
-        // if this method is called from within the agent computation thread, this should work
-        Channel c = Channel.current();
-        if (c!=null && Boolean.TRUE.equals(c.getProperty("slave")))
-            return c;
-
-        return null;
+        return AgentComputerUtil.getChannelToMaster();
     }
 
     /**
      * Helper method for Jelly.
      */
+    @Restricted(DoNotUse.class)
+    @RestrictedSince("TODO")
     public static List<SlaveSystemInfo> getSystemInfoExtensions() {
         return SlaveSystemInfo.all();
     }
 
     private static class SlaveLogFetcher extends MasterToSlaveCallable<List<LogRecord>,RuntimeException> {
         public List<LogRecord> call() {
-            return new ArrayList<LogRecord>(SLAVE_LOG_HANDLER.getView());
+            return new ArrayList<>(SLAVE_LOG_HANDLER.getView());
         }
     }
+
+    // use RingBufferLogHandler class name to configure for backward compatibility
+    private static final int DEFAULT_RING_BUFFER_SIZE = SystemProperties.getInteger(RingBufferLogHandler.class.getName() + ".defaultSize", 256);
 
     private static final Logger LOGGER = Logger.getLogger(SlaveComputer.class.getName());
 }

@@ -37,9 +37,10 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import jenkins.model.ParameterizedJobMixIn;
+import jenkins.scm.SCMDecisionHandler;
 
 /**
  * The item type accepted by {@link SCMTrigger}.
@@ -56,7 +57,7 @@ public interface SCMTriggerItem {
     /** @see jenkins.model.ParameterizedJobMixIn.ParameterizedJob#getQuietPeriod */
     int getQuietPeriod();
 
-    /** @see ParameterizedJobMixIn#scheduleBuild2 */
+    /** @see jenkins.model.ParameterizedJobMixIn.ParameterizedJob#scheduleBuild2 */
     @CheckForNull QueueTaskFuture<?> scheduleBuild2(int quietPeriod, Action... actions);
 
     /**
@@ -65,8 +66,11 @@ public interface SCMTriggerItem {
      * <p>
      * The implementation is responsible for ensuring mutual exclusion between polling and builds
      * if necessary.
+     * <p>
+     * The implementation is responsible for checking the {@link SCMDecisionHandler} before proceeding
+     * with the actual polling.
      */
-    @Nonnull PollingResult poll(@Nonnull TaskListener listener);
+    @NonNull PollingResult poll(@NonNull TaskListener listener);
 
     @CheckForNull SCMTrigger getSCMTrigger();
 
@@ -75,7 +79,22 @@ public interface SCMTriggerItem {
      * May be used for informational purposes, or to determine whether to initiate polling.
      * @return a possibly empty collection
      */
-    @Nonnull Collection<? extends SCM> getSCMs();
+    @NonNull Collection<? extends SCM> getSCMs();
+
+    /**
+     * Schedules a polling of this project.
+     */
+    default boolean schedulePolling() {
+        if (this instanceof ParameterizedJobMixIn.ParameterizedJob && ((ParameterizedJobMixIn.ParameterizedJob) this).isDisabled()) {
+            return false;
+        }
+        SCMTrigger scmt = getSCMTrigger();
+        if (scmt == null) {
+            return false;
+        }
+        scmt.run();
+        return true;
+    }
 
     /**
      * Utilities.
@@ -116,6 +135,11 @@ public interface SCMTriggerItem {
                 return delegate.asProject().scheduleBuild2(quietPeriod, null, actions);
             }
             @Override public PollingResult poll(TaskListener listener) {
+                SCMDecisionHandler veto = SCMDecisionHandler.firstShouldPollVeto(asItem());
+                if (veto != null && !veto.shouldPoll(asItem())) {
+                    listener.getLogger().println(Messages.SCMTriggerItem_PollingVetoed(veto));
+                    return PollingResult.NO_CHANGES;
+                }
                 return delegate.poll(listener);
             }
             @Override public SCMTrigger getSCMTrigger() {
@@ -126,7 +150,7 @@ public interface SCMTriggerItem {
             }
         }
 
-        public static @Nonnull Collection<? extends SCM> resolveMultiScmIfConfigured(@CheckForNull SCM scm) {
+        public static @NonNull Collection<? extends SCM> resolveMultiScmIfConfigured(@CheckForNull SCM scm) {
             if (scm == null || scm instanceof NullSCM) {
                 return Collections.emptySet();
             } else if (scm.getClass().getName().equals("org.jenkinsci.plugins.multiplescms.MultiSCM")) {

@@ -18,7 +18,7 @@ import java.util.Collection;
  * {@link Callable#checkRoles(RoleChecker)} method.
  *
  * @author Kohsuke Kawaguchi
- * @since 1.THU
+ * @since 1.587 / 1.580.1
  */
 public abstract class CallableWhitelist implements ExtensionPoint {
     /**
@@ -43,6 +43,6 @@ public abstract class CallableWhitelist implements ExtensionPoint {
     public abstract boolean isWhitelisted(RoleSensitive subject, Collection<Role> expected, Object context);
 
     public static ExtensionList<CallableWhitelist> all() {
-        return Jenkins.getInstance().getExtensionList(CallableWhitelist.class);
+        return Jenkins.get().getExtensionList(CallableWhitelist.class);
     }
 }

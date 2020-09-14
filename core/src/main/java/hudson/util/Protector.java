@@ -23,15 +23,22 @@
  */
 package hudson.util;
 
+import hudson.RestrictedSince;
+import org.apache.commons.lang.ArrayUtils;
+import org.kohsuke.accmod.Restricted;
+import org.kohsuke.accmod.restrictions.NoExternalUse;
+
 import javax.crypto.SecretKey;
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
-import java.io.IOException;
-import java.io.UnsupportedEncodingException;
+import javax.crypto.spec.IvParameterSpec;
+import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.util.Arrays;
+import java.util.Base64;
 
-import com.trilead.ssh2.crypto.Base64;
 
 /**
  * Encrypt/decrypt data by using a "session" key that only lasts for
@@ -39,20 +46,26 @@ import com.trilead.ssh2.crypto.Base64;
  *
  * @author Kohsuke Kawaguchi
  * @see Scrambler
- * @since 1.162
+ * @since 1.162 and restricted since TODO
  */
+@Restricted(NoExternalUse.class)
+@RestrictedSince("TODO")
 public class Protector {
-    private static final String ALGORITHM = "DES";
-    private static final String MAGIC = ":::";
+    private static final String ALGORITHM_MODE = "AES/CBC/PKCS5Padding";
+    private static final String ALGORITHM = "AES";
+    private static final String MAGIC = ":::MAGIC";
+    private static final int IV_BYTES = 16;
 
     public static String protect(String secret) {
         try {
-            Cipher cipher = Secret.getCipher(ALGORITHM);
-            cipher.init(Cipher.ENCRYPT_MODE, DES_KEY);
-            return new String(Base64.encode(cipher.doFinal((secret+ MAGIC).getBytes("UTF-8"))));
+            final byte[] iv = new byte[IV_BYTES];
+            SR.nextBytes(iv);
+            Cipher cipher = Secret.getCipher(ALGORITHM_MODE);
+            cipher.init(Cipher.ENCRYPT_MODE, KEY, new IvParameterSpec(iv));
+            final byte[] encrypted = cipher.doFinal((secret + MAGIC).getBytes(StandardCharsets.UTF_8));
+            final byte[] value = ArrayUtils.addAll(iv, encrypted);
+            return new String(Base64.getEncoder().encode(value), StandardCharsets.UTF_8);
         } catch (GeneralSecurityException e) {
-            throw new Error(e); // impossible
-        } catch (UnsupportedEncodingException e) {
             throw new Error(e); // impossible
         }
     }
@@ -61,28 +74,33 @@ public class Protector {
      * Returns null if fails to decrypt properly.
      */
     public static String unprotect(String data) {
-        if(data==null)      return null;
+        if (data == null) {
+            return null;
+        }
         try {
-            Cipher cipher = Secret.getCipher(ALGORITHM);
-            cipher.init(Cipher.DECRYPT_MODE, DES_KEY);
-            String plainText = new String(cipher.doFinal(Base64.decode(data.toCharArray())), "UTF-8");
-            if(plainText.endsWith(MAGIC))
-                return plainText.substring(0,plainText.length()-3);
+            final byte[] value = Base64.getDecoder().decode(data.getBytes(StandardCharsets.UTF_8));
+            final byte[] iv = Arrays.copyOfRange(value, 0, IV_BYTES);
+            final byte[] encrypted = Arrays.copyOfRange(value, IV_BYTES, value.length);
+            Cipher cipher = Secret.getCipher(ALGORITHM_MODE);
+            cipher.init(Cipher.DECRYPT_MODE, KEY, new IvParameterSpec(iv));
+            String plainText = new String(cipher.doFinal(encrypted), StandardCharsets.UTF_8);
+            if (plainText.endsWith(MAGIC)) {
+                return plainText.substring(0, plainText.length() - MAGIC.length());
+            }
             return null;
-        } catch (GeneralSecurityException e) {
-            return null;
-        } catch (UnsupportedEncodingException e) {
-            throw new Error(e); // impossible
-        } catch (IOException e) {
+        } catch (GeneralSecurityException | RuntimeException e) {
             return null;
         }
     }
 
-    private static final SecretKey DES_KEY;
+    private static final SecretKey KEY;
+
+    private static final SecureRandom SR = new SecureRandom();
 
     static {
         try {
-            DES_KEY = KeyGenerator.getInstance(ALGORITHM).generateKey();
+            final KeyGenerator instance = KeyGenerator.getInstance(ALGORITHM);
+            KEY = instance.generateKey();
         } catch (NoSuchAlgorithmException e) {
             throw new Error(e);
         }

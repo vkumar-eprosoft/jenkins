@@ -26,18 +26,19 @@ package hudson.model;
 import hudson.model.MultiStageTimeSeries.TimeScale;
 import hudson.model.queue.SubTask;
 
-import org.apache.commons.io.IOUtils;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.StandardOpenOption;
 import org.jfree.chart.JFreeChart;
 import org.junit.Test;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 
 import static org.hamcrest.CoreMatchers.is;
-import static org.junit.Assert.assertThat;
+import static org.hamcrest.MatcherAssert.assertThat;
 
 /**
  * @author Kohsuke Kawaguchi
@@ -87,11 +88,9 @@ public class LoadStatisticsTest {
         BufferedImage image = chart.createBufferedImage(400, 200);
 
         File tempFile = File.createTempFile("chart-", "png");
-        FileOutputStream os = new FileOutputStream(tempFile);
-        try {
+        try (OutputStream os = Files.newOutputStream(tempFile.toPath(), StandardOpenOption.DELETE_ON_CLOSE)) {
             ImageIO.write(image, "PNG", os);
         } finally {
-            IOUtils.closeQuietly(os);
             tempFile.delete();
         }
     }
@@ -102,7 +101,7 @@ public class LoadStatisticsTest {
         assertThat(LoadStatistics.isModern(LoadStatistics.class), is(false));
     }
 
-    private class Modern extends LoadStatistics {
+    private static class Modern extends LoadStatistics {
 
         protected Modern(int initialOnlineExecutors, int initialBusyExecutors) {
             super(initialOnlineExecutors, initialBusyExecutors);

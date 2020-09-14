@@ -23,20 +23,36 @@
  */
 package jenkins.util;
 
-import edu.umd.cs.findbugs.annotations.CheckForNull;
-import edu.umd.cs.findbugs.annotations.Nullable;
+import edu.umd.cs.findbugs.annotations.SuppressFBWarnings;
 import hudson.EnvVars;
+import hudson.Extension;
+import hudson.FilePath;
+import hudson.model.Computer;
+import hudson.model.TaskListener;
+import hudson.remoting.Channel;
+import hudson.slaves.ComputerListener;
+import java.io.IOException;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import javax.servlet.ServletContext;
 import javax.servlet.ServletContextEvent;
 import javax.servlet.ServletContextListener;
+import jenkins.security.MasterToSlaveCallable;
+
+import jenkins.util.io.OnMaster;
 import org.apache.commons.lang.StringUtils;
 import org.kohsuke.accmod.Restricted;
 import org.kohsuke.accmod.restrictions.NoExternalUse;
 
 /**
- * Centralizes calls to {@link System#getProperty()} and related calls.
+ * Centralizes calls to {@link System#getProperty(String)} and related calls.
  * This allows us to get values not just from environment variables but also from
  * the {@link ServletContext}, so properties like {@code hudson.DNSMultiCast.disabled}
  * can be set in {@code context.xml} and the app server's boot script does not
@@ -59,37 +75,104 @@ import org.kohsuke.accmod.restrictions.NoExternalUse;
  * <p>While it looks like it on first glance, this cannot be mapped to {@link EnvVars},
  * because {@link EnvVars} is only for build variables, not Jenkins itself variables.
  *
- * @author Johannes Ernst
- * @since TODO
+ * @since 2.236
  */
-//TODO: Define a correct design of this engine later. Should be accessible in libs (remoting, stapler) and Jenkins modules too
-@Restricted(NoExternalUse.class)
-public class SystemProperties implements ServletContextListener {
-    // this class implements ServletContextListener and is declared in WEB-INF/web.xml
+@SuppressFBWarnings(value = "ST_WRITE_TO_STATIC_FROM_INSTANCE_METHOD", justification = "Currently Jenkins instance may have one ond only one context")
+public class SystemProperties {
+
+    @FunctionalInterface
+    private interface Handler {
+        @CheckForNull
+        String getString(String key);
+    }
+
+    private static final Handler NULL_HANDLER = key -> null;
+
+    private static @NonNull Handler handler = NULL_HANDLER;
+
+    // declared in WEB-INF/web.xml
+    @Restricted(NoExternalUse.class)
+    public static final class Listener implements ServletContextListener, OnMaster {
+
+        /**
+         * Called by the servlet container to initialize the {@link ServletContext}.
+         */
+        @Override
+        public void contextInitialized(ServletContextEvent event) {
+            ServletContext theContext = event.getServletContext();
+            handler = key -> {
+                if (StringUtils.isNotBlank(key)) {
+                    try {
+                        return theContext.getInitParameter(key);
+                    } catch (SecurityException ex) {
+                        // Log exception and go on
+                        LOGGER.log(Level.CONFIG, "Access to the property {0} is prohibited", key);
+                    }
+                }
+                return null;
+            };
+        }
+
+        @Override
+        public void contextDestroyed(ServletContextEvent event) {
+            handler = NULL_HANDLER;
+        }
+
+    }
+
+    private static final Set<String> ALLOW_ON_AGENT = Collections.synchronizedSet(new HashSet<>());
 
     /**
-     * The ServletContext to get the "init" parameters from.
+     * Mark a key whose value should be made accessible in agent JVMs.
+     *
+     * @param key Property key to be explicitly allowed
      */
-    @CheckForNull
-    private static ServletContext theContext;
+    public static void allowOnAgent(String key) {
+        ALLOW_ON_AGENT.add(key);
+    }
+
+    @Extension
+    @Restricted(NoExternalUse.class)
+    public static final class AgentCopier extends ComputerListener {
+        @Override
+        public void preOnline(Computer c, Channel channel, FilePath root, TaskListener listener) throws IOException, InterruptedException {
+            channel.call(new CopySystemProperties());
+        }
+        private static final class CopySystemProperties extends MasterToSlaveCallable<Void, RuntimeException> {
+            private static final long serialVersionUID = 1;
+            private final Map<String, String> snapshot;
+            CopySystemProperties() {
+                // Take a snapshot of those system properties and context variables available on the master at the time the agent starts which have been whitelisted for that purpose.
+                snapshot = new HashMap<>();
+                for (String key : ALLOW_ON_AGENT) {
+                    snapshot.put(key, getString(key));
+                }
+                LOGGER.log(Level.FINE, "taking snapshot of {0}", snapshot);
+            }
+            @Override
+            public Void call() throws RuntimeException {
+                handler = new CopiedHandler(snapshot);
+                return null;
+            }
+        }
+        private static final class CopiedHandler implements Handler {
+            private final Map<String, String> snapshot;
+            CopiedHandler(Map<String, String> snapshot) {
+                this.snapshot = snapshot;
+            }
+            @Override
+            public String getString(String key) {
+                return snapshot.get(key);
+            }
+        }
+    }
 
     /**
      * Logger.
      */
     private static final Logger LOGGER = Logger.getLogger(SystemProperties.class.getName());
 
-    /**
-     * Public for the servlet container.
-     */
-    public SystemProperties() {}
-
-    /**
-     * Called by the servlet container to initialize the {@link ServletContext}.
-     */
-    @Override
-    public void contextInitialized(ServletContextEvent event) {
-        theContext = event.getServletContext();
-    }
+    private SystemProperties() {}
 
     /**
      * Gets the system property indicated by the specified key.
@@ -105,26 +188,7 @@ public class SystemProperties implements ServletContextListener {
      */
     @CheckForNull
     public static String getString(String key) {
-        String value = System.getProperty(key); // keep passing on any exceptions
-        if (value != null) {
-            if (LOGGER.isLoggable(Level.CONFIG)) {
-                LOGGER.log(Level.CONFIG, "Property (system): {0} => {1}", new Object[] {key, value});
-            }
-            return value;
-        }
-        
-        value = tryGetValueFromContext(key);
-        if (value != null) {
-            if (LOGGER.isLoggable(Level.CONFIG)) {
-                LOGGER.log(Level.CONFIG, "Property (context): {0} => {1}", new Object[]{key, value});
-            }
-            return value;
-        }
-        
-        if (LOGGER.isLoggable(Level.CONFIG)) {
-            LOGGER.log(Level.CONFIG, "Property (not found): {0} => {1}", new Object[] {key, value});
-        }
-        return null;
+        return getString(key, null);
     }
 
     /**
@@ -135,31 +199,49 @@ public class SystemProperties implements ServletContextListener {
      * @param      key   the name of the system property.
      * @param      def   a default value.
      * @return     the string value of the system property,
-     *             or {@code null} if the the property is missing and the default value is {@code null}.
+     *             or {@code null} if the property is missing and the default value is {@code null}.
      *
      * @exception  NullPointerException if {@code key} is {@code null}.
      * @exception  IllegalArgumentException if {@code key} is empty.
      */
     public static String getString(String key, @CheckForNull String def) {
+        return getString(key, def, Level.CONFIG);
+    }
+
+    /**
+     * Gets the system property indicated by the specified key, or a default value.
+     * This behaves just like {@link System#getProperty(java.lang.String, java.lang.String)}, except
+     * that it also consults the {@link ServletContext}'s "init" parameters.
+     *
+     * @param      key   the name of the system property.
+     * @param      def   a default value.
+     * @param      logLevel the level of the log if the provided key is not found.
+     * @return     the string value of the system property,
+     *             or {@code null} if the property is missing and the default value is {@code null}.
+     *
+     * @exception  NullPointerException if {@code key} is {@code null}.
+     * @exception  IllegalArgumentException if {@code key} is empty.
+     */
+    public static String getString(String key, @CheckForNull String def, Level logLevel) {
         String value = System.getProperty(key); // keep passing on any exceptions
         if (value != null) {
-            if (LOGGER.isLoggable(Level.CONFIG)) {
-                LOGGER.log(Level.CONFIG, "Property (system): {0} => {1}", new Object[] {key, value});
+            if (LOGGER.isLoggable(logLevel)) {
+                LOGGER.log(logLevel, "Property (system): {0} => {1}", new Object[] {key, value});
             }
             return value;
         } 
         
-        value = tryGetValueFromContext(key);
+        value = handler.getString(key);
         if (value != null) {
-            if (LOGGER.isLoggable(Level.CONFIG)) {
-                LOGGER.log(Level.CONFIG, "Property (context): {0} => {1}", new Object[]{key, value});
+            if (LOGGER.isLoggable(logLevel)) {
+                LOGGER.log(logLevel, "Property (context): {0} => {1}", new Object[]{key, value});
             }
             return value;
         }
         
         value = def;
-        if (LOGGER.isLoggable(Level.CONFIG)) {
-            LOGGER.log(Level.CONFIG, "Property (default): {0} => {1}", new Object[] {key, value});
+        if (LOGGER.isLoggable(logLevel)) {
+            LOGGER.log(logLevel, "Property (default): {0} => {1}", new Object[] {key, value});
         }
         return value;
     }
@@ -204,6 +286,21 @@ public class SystemProperties implements ServletContextListener {
         }
         return def;
     }
+
+    /**
+     * Returns {@link Boolean#TRUE} if the named system property exists and is equal to the string {@code "true}
+     * (ignoring case), returns {@link Boolean#FALSE} if the system property exists and doesn't equal {@code "true}
+     * otherwise returns {@code null} if the named system property does not exist.
+     *
+     * @param name the system property name.
+     * @return {@link Boolean#TRUE}, {@link Boolean#FALSE} or {@code null}
+     * @since 2.16
+     */
+    @CheckForNull
+    public static Boolean optBoolean(String name) {
+        String v = getString(name);
+        return v == null ? null : Boolean.parseBoolean(v);
+    }
     
     /**
       * Determines the integer value of the system property with the
@@ -221,20 +318,39 @@ public class SystemProperties implements ServletContextListener {
     }
 
     /**
+     * Determines the integer value of the system property with the
+     * specified name, or a default value.
+     *
+     * This behaves just like {@code Integer.getInteger(String,Integer)}, except that it
+     * also consults the {@code ServletContext}'s "init" parameters. If neither exist,
+     * return the default value.
+     *
+     * @param   name property name.
+     * @param   def   a default value.
+     * @return  the {@code Integer} value of the property.
+     *          If the property is missing, return the default value.
+     *          Result may be {@code null} only if the default value is {@code null}.
+     */
+    public static Integer getInteger(String name, Integer def) {
+        return getInteger(name, def, Level.CONFIG);
+    }
+
+    /**
       * Determines the integer value of the system property with the
       * specified name, or a default value.
       * 
-      * This behaves just like <code>Integer.getInteger(String,Integer)</code>, except that it
-      * also consults the <code>ServletContext</code>'s "init" parameters. If neither exist,
+      * This behaves just like {@code Integer.getInteger(String,Integer)}, except that it
+      * also consults the {@code ServletContext}'s "init" parameters. If neither exist,
       * return the default value. 
       * 
       * @param   name property name.
       * @param   def   a default value.
+      * @param   logLevel the level of the log if the provided system property name cannot be decoded into Integer.
       * @return  the {@code Integer} value of the property.
       *          If the property is missing, return the default value.
       *          Result may be {@code null} only if the default value is {@code null}.
       */
-    public static Integer getInteger(String name, Integer def) {
+    public static Integer getInteger(String name, Integer def, Level logLevel) {
         String v = getString(name);
        
         if (v != null) {
@@ -242,8 +358,8 @@ public class SystemProperties implements ServletContextListener {
                 return Integer.decode(v);
             } catch (NumberFormatException e) {
                 // Ignore, fallback to default
-                if (LOGGER.isLoggable(Level.CONFIG)) {
-                    LOGGER.log(Level.CONFIG, "Property. Value is not integer: {0} => {1}", new Object[] {name, v});
+                if (LOGGER.isLoggable(logLevel)) {
+                    LOGGER.log(logLevel, "Property. Value is not integer: {0} => {1}", new Object[] {name, v});
                 }
             }
         }
@@ -264,22 +380,41 @@ public class SystemProperties implements ServletContextListener {
     public static Long getLong(String name) {
         return getLong(name, null);
     }
-    
+
+    /**
+     * Determines the integer value of the system property with the
+     * specified name, or a default value.
+     *
+     * This behaves just like {@code Long.getLong(String,Long)}, except that it
+     * also consults the {@link ServletContext}'s "init" parameters. If neither exist,
+     * return the default value.
+     *
+     * @param   name property name.
+     * @param   def   a default value.
+     * @return  the {@code Long} value of the property.
+     *          If the property is missing, return the default value.
+     *          Result may be {@code null} only if the default value is {@code null}.
+     */
+    public static Long getLong(String name, Long def) {
+        return getLong(name, def, Level.CONFIG);
+    }
+
     /**
       * Determines the integer value of the system property with the
       * specified name, or a default value.
       * 
-      * This behaves just like <code>Long.getLong(String,Long)</code>, except that it
-      * also consults the <code>ServletContext</code>'s "init" parameters. If neither exist,
+      * This behaves just like {@link Long#getLong(String, Long)}, except that it
+      * also consults the {@link ServletContext}'s "init" parameters. If neither exist,
       * return the default value. 
       * 
       * @param   name property name.
       * @param   def   a default value.
+      * @param   logLevel the level of the log if the provided system property name cannot be decoded into Long.
       * @return  the {@code Long} value of the property.
       *          If the property is missing, return the default value.
       *          Result may be {@code null} only if the default value is {@code null}.
       */
-    public static Long getLong(String name, Long def) {
+    public static Long getLong(String name, Long def, Level logLevel) {
         String v = getString(name);
        
         if (v != null) {
@@ -287,32 +422,12 @@ public class SystemProperties implements ServletContextListener {
                 return Long.decode(v);
             } catch (NumberFormatException e) {
                 // Ignore, fallback to default
-                if (LOGGER.isLoggable(Level.CONFIG)) {
-                    LOGGER.log(Level.CONFIG, "Property. Value is not long: {0} => {1}", new Object[] {name, v});
+                if (LOGGER.isLoggable(logLevel)) {
+                    LOGGER.log(logLevel, "Property. Value is not long: {0} => {1}", new Object[] {name, v});
                 }
             }
         }
         return def;
     }
 
-    @CheckForNull
-    private static String tryGetValueFromContext(String key) {
-        if (StringUtils.isNotBlank(key) && theContext != null) {
-            try {
-                String value = theContext.getInitParameter(key);
-                if (value != null) {
-                    return value;
-                }
-            } catch (SecurityException ex) {
-                // Log exception and go on
-                LOGGER.log(Level.CONFIG, "Access to the property {0} is prohibited", key);
-            }
-        }
-        return null;
-    }
-
-    @Override
-    public void contextDestroyed(ServletContextEvent event) {
-        // nothing to do
-    }
 }

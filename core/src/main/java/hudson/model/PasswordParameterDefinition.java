@@ -31,6 +31,7 @@ import hudson.Extension;
 import hudson.util.Secret;
 import org.kohsuke.accmod.Restricted;
 import org.kohsuke.accmod.restrictions.DoNotUse;
+import org.kohsuke.accmod.restrictions.NoExternalUse;
 
 /**
  * Parameter whose value is a {@link Secret} and is hidden from the UI.
@@ -40,12 +41,21 @@ import org.kohsuke.accmod.restrictions.DoNotUse;
  */
 public class PasswordParameterDefinition extends SimpleParameterDefinition {
 
+    @Restricted(NoExternalUse.class)
+    public static final String DEFAULT_VALUE = "<DEFAULT>";
+
     private Secret defaultValue;
 
-    @DataBoundConstructor
+    @Deprecated
     public PasswordParameterDefinition(String name, String defaultValue, String description) {
         super(name, description);
         this.defaultValue = Secret.fromString(defaultValue);
+    }
+
+    @DataBoundConstructor
+    public PasswordParameterDefinition(String name, Secret defaultValueAsSecret, String description) {
+        super(name, description);
+        this.defaultValue = defaultValueAsSecret;
     }
 
     @Override
@@ -66,6 +76,9 @@ public class PasswordParameterDefinition extends SimpleParameterDefinition {
     @Override
     public PasswordParameterValue createValue(StaplerRequest req, JSONObject jo) {
         PasswordParameterValue value = req.bindJSON(PasswordParameterValue.class, jo);
+        if (value.getValue().getPlainText().equals(DEFAULT_VALUE)) {
+            value = new PasswordParameterValue(getName(), getDefaultValue());
+        }
         value.setDescription(getDescription());
         return value;
     }
@@ -89,16 +102,11 @@ public class PasswordParameterDefinition extends SimpleParameterDefinition {
         this.defaultValue = Secret.fromString(defaultValue);
     }
 
-    @Extension @Symbol({"password","nonStoredPasswordParam"})
+    @Extension @Symbol({"password"})
     public final static class ParameterDescriptorImpl extends ParameterDescriptor {
         @Override
         public String getDisplayName() {
             return Messages.PasswordParameterDefinition_DisplayName();
-        }
-        
-        @Override
-        public String getHelpFile() {
-            return "/help/parameter/string.html";
         }
     }
 }

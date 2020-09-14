@@ -23,7 +23,7 @@
  */
 package hudson.diagnosis;
 
-import hudson.util.TimeUnit2;
+import java.util.concurrent.TimeUnit;
 import hudson.util.ColorPalette;
 import hudson.Extension;
 import hudson.model.PeriodicWork;
@@ -39,6 +39,7 @@ import java.util.List;
 import java.util.ArrayList;
 import java.io.IOException;
 
+import jenkins.model.Jenkins;
 import org.jenkinsci.Symbol;
 import org.kohsuke.stapler.QueryParameter;
 
@@ -53,7 +54,7 @@ public final class MemoryUsageMonitor extends PeriodicWork {
      * A memory group is conceptually a set of memory pools. 
      */
     public final class MemoryGroup {
-        private final List<MemoryPoolMXBean> pools = new ArrayList<MemoryPoolMXBean>();
+        private final List<MemoryPoolMXBean> pools = new ArrayList<>();
 
         /**
          * Trend of the memory usage, after GCs.
@@ -102,6 +103,7 @@ public final class MemoryUsageMonitor extends PeriodicWork {
          * Generates the memory usage statistics graph.
          */
         public TrendChart doGraph(@QueryParameter String type) throws IOException {
+            Jenkins.get().checkAnyPermission(Jenkins.SYSTEM_READ, Jenkins.MANAGE);
             return MultiStageTimeSeries.createTrendChart(TimeScale.parse(type),used,max);
         }
     }
@@ -116,7 +118,7 @@ public final class MemoryUsageMonitor extends PeriodicWork {
     }
 
     public long getRecurrencePeriod() {
-        return TimeUnit2.SECONDS.toMillis(10);
+        return TimeUnit.SECONDS.toMillis(10);
     }
 
     protected void doRun() {

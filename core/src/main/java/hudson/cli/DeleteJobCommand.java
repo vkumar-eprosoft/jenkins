@@ -31,15 +31,16 @@ import org.kohsuke.args4j.Argument;
 
 import java.util.List;
 import java.util.HashSet;
-import java.util.logging.Logger;
 
 /**
+ * CLI command, which deletes a job or multiple jobs.
  * @author pjanouse
- * @since TODO
+ * @since 1.618
  */
 @Extension
 public class DeleteJobCommand extends CLICommand {
 
+    @SuppressWarnings("MismatchedQueryAndUpdateOfCollection")
     @Argument(usage="Name of the job(s) to delete", required=true, multiValued=true)
     private List<String> jobs;
 
@@ -53,13 +54,12 @@ public class DeleteJobCommand extends CLICommand {
     protected int run() throws Exception {
 
         boolean errorOccurred = false;
-        final Jenkins jenkins = Jenkins.getActiveInstance();
+        final Jenkins jenkins = Jenkins.get();
 
-        final HashSet<String> hs = new HashSet<String>();
-        hs.addAll(jobs);
+        final HashSet<String> hs = new HashSet<>(jobs);
 
         for (String job_s: hs) {
-            AbstractItem job = null;
+            AbstractItem job;
 
             try {
                 job = (AbstractItem) jenkins.getItemByFullName(job_s);
@@ -75,7 +75,7 @@ public class DeleteJobCommand extends CLICommand {
                     throw e;
                 }
 
-                final String errorMsg = String.format(job_s + ": " + e.getMessage());
+                final String errorMsg = job_s + ": " + e.getMessage();
                 stderr.println(errorMsg);
                 errorOccurred = true;
                 continue;
@@ -83,7 +83,7 @@ public class DeleteJobCommand extends CLICommand {
         }
 
         if (errorOccurred) {
-            throw new AbortException("Error occured while performing this command, see previous stderr output.");
+            throw new AbortException(CLI_LISTPARAM_SUMMARY_ERROR_TEXT);
         }
         return 0;
     }

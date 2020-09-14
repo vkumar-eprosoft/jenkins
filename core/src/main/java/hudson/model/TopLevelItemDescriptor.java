@@ -30,6 +30,9 @@ import org.acegisecurity.AccessDeniedException;
 import org.apache.commons.jelly.Script;
 import org.apache.commons.jelly.XMLOutput;
 import org.apache.commons.lang.StringUtils;
+import org.jenkins.ui.icon.Icon;
+import org.jenkins.ui.icon.IconSet;
+import org.jenkins.ui.icon.IconSpec;
 import org.kohsuke.stapler.MetaClass;
 import org.kohsuke.stapler.Stapler;
 import org.kohsuke.stapler.StaplerRequest;
@@ -37,8 +40,8 @@ import org.kohsuke.stapler.WebApp;
 import org.kohsuke.stapler.jelly.DefaultScriptInvoker;
 import org.kohsuke.stapler.jelly.JellyClassTearOff;
 
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.io.StringWriter;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -48,7 +51,7 @@ import java.util.logging.Logger;
  *
  * @author Kohsuke Kawaguchi
  */
-public abstract class TopLevelItemDescriptor extends Descriptor<TopLevelItem> {
+public abstract class TopLevelItemDescriptor extends Descriptor<TopLevelItem> implements IconSpec {
 
     private static final Logger LOGGER = Logger.getLogger(TopLevelItemDescriptor.class.getName());
 
@@ -122,7 +125,7 @@ public abstract class TopLevelItemDescriptor extends Descriptor<TopLevelItem> {
      *
      * <p>
      * Used as the caption when the user chooses what item type to create.
-     * The descriptor implementation also needs to have <tt>newInstanceDetail.jelly</tt>
+     * The descriptor implementation also needs to have {@code newInstanceDetail.jelly}
      * script, which will be used to render the text below the caption
      * that explains the item type.
      */
@@ -132,16 +135,17 @@ public abstract class TopLevelItemDescriptor extends Descriptor<TopLevelItem> {
     }
 
     /**
-     * A description of this kind of item type. This description can contain HTML code but it is recommend to use text plain
-     * in order to avoid how it should be represented.
+     * A description of this kind of item type. This description can contain HTML code but it is recommended that
+     * you use plain text in order to be consistent with the rest of Jenkins.
      *
-     * This method should be called in a thread where Stapler is associated, but it will return an empty string.
+     * This method should be called from a thread where Stapler is handling an HTTP request, otherwise it will
+     * return an empty string.
      *
      * @return A string, by default the value from newInstanceDetail view is taken.
      *
-     * @since TODO
+     * @since 2.0
      */
-    @Nonnull
+    @NonNull
     public String getDescription() {
         Stapler stapler = Stapler.getCurrent();
         if (stapler != null) {
@@ -171,9 +175,9 @@ public abstract class TopLevelItemDescriptor extends Descriptor<TopLevelItem> {
      *
      * @return A string with the category identifier, {@link ItemCategory.UncategorizedCategory#getId()} by default.
      *
-     * @since TODO
+     * @since 2.0
      */
-    @Nonnull
+    @NonNull
     public String getCategoryId() {
         return ItemCategory.UncategorizedCategory.ID;
     }
@@ -184,13 +188,15 @@ public abstract class TopLevelItemDescriptor extends Descriptor<TopLevelItem> {
      * For example: plugin/plugin-shortname/images/:size/item.png, where {@code :size} represents the different
      * icon sizes used commonly in Jenkins project: 16x16, 24x24, 32x32 or 48x48
      *
-     * @see {@link FreeStyleProject.DescriptorImpl#getIconFilePathPattern()}
+     * @see FreeStyleProject.DescriptorImpl#getIconFilePathPattern()
      *
      * @return A string or null if it is not defined.
      *
-     * @since TODO
+     * @since 2.0
+     * @deprecated prefer {@link #getIconClassName()}
      */
     @CheckForNull
+    @Deprecated
     public String getIconFilePathPattern() {
         return null;
     }
@@ -202,12 +208,44 @@ public abstract class TopLevelItemDescriptor extends Descriptor<TopLevelItem> {
      *
      * @return A string or null if it is not defined.
      *
-     * @since TODO
+     * @since 2.0
+     * @deprecated prefer {@link #getIconClassName()}
      */
     @CheckForNull
+    @Deprecated
     public String getIconFilePath(String size) {
         if (!StringUtils.isBlank(getIconFilePathPattern())) {
             return getIconFilePathPattern().replace(":size", size);
+        }
+        return null;
+    }
+
+    /**
+     * Get the Item's Icon class specification e.g. 'icon-notepad'.
+     * <p>
+     * Note: do <strong>NOT</strong> include icon size specifications (such as 'icon-sm').
+     *
+     * @return The Icon class specification e.g. 'icon-notepad'.
+     */
+    @Override
+    public String getIconClassName() {
+        // Oh the fun of somebody adding a legacy way of referencing images into 2.0 code
+        String pattern = getIconFilePathPattern();
+        if (pattern != null) {
+            // here we go with the dance of the IconSet's
+            String path = pattern.replace(":size", "24x24"); // we'll strip the icon-md to get the class name
+            if (path.indexOf('/') == -1) {
+                // this one is easy... too easy... also will never happen
+                return IconSet.toNormalizedIconNameClass(path);
+            }
+            if (Jenkins.RESOURCE_PATH.length() > 0 && path.startsWith(Jenkins.RESOURCE_PATH)) {
+                // will to live falling
+                path = path.substring(Jenkins.RESOURCE_PATH.length());
+            }
+            Icon icon = IconSet.icons.getIconByUrl(path);
+            if (icon != null) {
+                return icon.getClassSpec().replaceAll("\\s*icon-md\\s*", " ").replaceAll("\\s+", " ");
+            }
         }
         return null;
     }
@@ -229,7 +267,7 @@ public abstract class TopLevelItemDescriptor extends Descriptor<TopLevelItem> {
      */
     @Deprecated
     public TopLevelItem newInstance(String name) {
-        return newInstance(Jenkins.getInstance(), name);
+        return newInstance(Jenkins.get(), name);
     }
 
     /**

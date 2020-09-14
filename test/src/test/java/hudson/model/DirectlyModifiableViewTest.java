@@ -23,7 +23,9 @@
  */
 package hudson.model;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertFalse;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.junit.Assert.assertTrue;
 
 import java.io.IOException;
 import java.net.URL;
@@ -184,8 +186,8 @@ public class DirectlyModifiableViewTest {
     }
 
     private Page doPost(View view, String path) throws Exception {
-        WebClient wc = j.createWebClient();
-        wc.getOptions().setThrowExceptionOnFailingStatusCode(false);
+        WebClient wc = j.createWebClient()
+                .withThrowExceptionOnFailingStatusCode(false);
         WebRequest req = new WebRequest(
                 new URL(j.jenkins.getRootUrl() + view.getUrl() + path),
                 HttpMethod.POST

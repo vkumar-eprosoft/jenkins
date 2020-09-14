@@ -43,7 +43,10 @@ import org.jvnet.hudson.reactor.TaskGraphBuilder;
  *  <li>PLUGINS_PREPARED
  *  <li>PLUGINS_STARTED
  *  <li>EXTENSIONS_AUGMENTED
+ *  <li>SYSTEM_CONFIG_LOADED</li>
+ *  <li>SYSTEM_CONFIG_ADAPTED</li>
  *  <li>JOB_LOADED
+ *  <li>JOB_CONFIG_ADAPTED</li>
  *  <li>COMPLETED
  * </ol>
  * 
@@ -85,13 +88,33 @@ public enum InitMilestone implements Milestone {
     EXTENSIONS_AUGMENTED("Augmented all extensions"),
 
     /**
+     * By this milestone, all the system configurations are loaded from file system
+     * @since 2.220
+     */
+    SYSTEM_CONFIG_LOADED("System config loaded"),
+
+    /**
+     * By this milestone, the system configuration is adapted just in case any plugin (CasC might be an example) needs
+     * to update configuration files
+     * @since 2.220
+     */
+    SYSTEM_CONFIG_ADAPTED("System config adapted"),
+
+    /**
      * By this milestone, all jobs and their build records are loaded from disk.
      */
     JOB_LOADED("Loaded all jobs"),
 
     /**
-     * The very last milestone
-     *
+     * By this milestone, any job configuration is adapted or updated just in case any plugin needs to update former/old configurations.
+     * It does not include {@link hudson.init.impl.GroovyInitScript}s which get executed later
+     * @since 2.220
+     */
+    JOB_CONFIG_ADAPTED("Configuration for all jobs updated"),
+
+    /**
+     * The very last milestone.
+     * All executions should be completed by it, including {@link hudson.init.impl.GroovyInitScript}s.
      * This is used in {@link Initializer#before()} since annotations cannot have null as the default value.
      */
     COMPLETED("Completed initialization");

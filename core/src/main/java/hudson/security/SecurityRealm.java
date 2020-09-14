@@ -68,14 +68,17 @@ import java.io.IOException;
 import java.io.UnsupportedEncodingException;
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Level;
 import java.util.logging.Logger;
+import net.sf.json.JSONObject;
+import org.jenkinsci.Symbol;
 
 /**
  * Pluggable security realm that connects external user database to Hudson.
  *
  * <p>
  * If additional views/URLs need to be exposed,
- * an active {@link SecurityRealm} is bound to <tt>CONTEXT_ROOT/securityRealm/</tt>
+ * an active {@link SecurityRealm} is bound to {@code CONTEXT_ROOT/securityRealm/}
  * through {@link jenkins.model.Jenkins#getSecurityRealm()}, so you can define additional pages and
  * operations on your {@link SecurityRealm}.
  *
@@ -143,7 +146,7 @@ public abstract class SecurityRealm extends AbstractDescribableImpl<SecurityReal
      * {@link AuthenticationManager} instantiation often depends on the user-specified parameters
      * (for example, if the authentication is based on LDAP, the user needs to specify
      * the host name of the LDAP server.) Such configuration is expected to be
-     * presented to the user via <tt>config.jelly</tt> and then
+     * presented to the user via {@code config.jelly} and then
      * captured as instance variables inside the {@link SecurityRealm} implementation.
      *
      * <p>
@@ -181,21 +184,11 @@ public abstract class SecurityRealm extends AbstractDescribableImpl<SecurityReal
     }
 
     /**
-     * Creates a {@link CliAuthenticator} object that authenticates an invocation of a CLI command.
-     * See {@link CliAuthenticator} for more details.
-     *
-     * @param command
-     *      The command about to be executed.
-     * @return
-     *      never null. By default, this method returns a no-op authenticator that always authenticates
-     *      the session as authenticated by the transport (which is often just {@link jenkins.model.Jenkins#ANONYMOUS}.)
+     * @deprecated No longer used.
      */
+    @Deprecated
     public CliAuthenticator createCliAuthenticator(final CLICommand command) {
-        return new CliAuthenticator() {
-            public Authentication authenticate() {
-                return command.getTransportAuthentication();
-            }
-        };
+        throw new UnsupportedOperationException();
     }
 
     /**
@@ -203,8 +196,8 @@ public abstract class SecurityRealm extends AbstractDescribableImpl<SecurityReal
      *
      * <p>
      * {@link SecurityRealm} is a singleton resource in Hudson, and therefore
-     * it's always configured through <tt>config.jelly</tt> and never with
-     * <tt>global.jelly</tt>. 
+     * it's always configured through {@code config.jelly} and never with
+     * {@code global.jelly}.
      */
     @Override
     public Descriptor<SecurityRealm> getDescriptor() {
@@ -223,7 +216,7 @@ public abstract class SecurityRealm extends AbstractDescribableImpl<SecurityReal
      * Gets the target URL of the "login" link.
      * There's no need to override this, except for {@link LegacySecurityRealm}.
      * On legacy implementation this should point to {@code loginEntry}, which
-     * is protected by <tt>web.xml</tt>, so that the user can be eventually authenticated
+     * is protected by {@code web.xml}, so that the user can be eventually authenticated
      * by the container.
      *
      * <p>
@@ -300,26 +293,67 @@ public abstract class SecurityRealm extends AbstractDescribableImpl<SecurityReal
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         SecurityContextHolder.clearContext();
 
-        // reset remember-me cookie
-        Cookie cookie = new Cookie(ACEGI_SECURITY_HASHED_REMEMBER_ME_COOKIE_KEY,"");
-        cookie.setPath(req.getContextPath().length()>0 ? req.getContextPath() : "/");
-        rsp.addCookie(cookie);
+        String contextPath = req.getContextPath().length() > 0 ? req.getContextPath() : "/";
+        resetRememberMeCookie(req, rsp, contextPath);
+        clearStaleSessionCookies(req, rsp, contextPath);
 
         rsp.sendRedirect2(getPostLogOutUrl(req,auth));
     }
 
+    private void resetRememberMeCookie(StaplerRequest req, StaplerResponse rsp, String contextPath) {
+        Cookie cookie = new Cookie(ACEGI_SECURITY_HASHED_REMEMBER_ME_COOKIE_KEY, "");
+        cookie.setMaxAge(0);
+        cookie.setSecure(req.isSecure());
+        cookie.setHttpOnly(true);
+        cookie.setPath(contextPath);
+        rsp.addCookie(cookie);
+    }
+
+    private void clearStaleSessionCookies(StaplerRequest req, StaplerResponse rsp, String contextPath) {
+        /* While "executableWar.jetty.sessionIdCookieName" and
+         * "executableWar.jetty.disableCustomSessionIdCookieName"
+         * <https://github.com/jenkinsci/extras-executable-war/blob/6558df699d1366b18d045d2ffda3e970df377873/src/main/java/Main.java#L79-L97>
+         * can influence the current running behavior of the generated session cookie, we aren't interested
+         * in either of them at all.
+         *
+         * What matters to us are any stale cookies.
+         * Those cookies would have been created by this jenkins in a different incarnation, when it
+         * could, perhaps, have had different configuration flags, including for those configurables.
+         *
+         * Thus, we unconditionally zap all JSESSIONID. cookies.
+         * a new cookie will be generated by sendRedirect2(...)
+         *
+         * We don't care about JSESSIONID cookies outside our path because it's the browser's
+         * responsibility not to send them to us in the first place.
+         */
+        final String cookieName = "JSESSIONID.";
+        Cookie[] cookies = req.getCookies();
+        if (cookies != null) {
+            for (Cookie cookie : cookies) {
+                if (cookie.getName().startsWith(cookieName)) {
+                    LOGGER.log(Level.FINE, "Removing cookie {0} during logout", cookie.getName());
+                    // one reason users log out is to clear their session(s)
+                    // so tell the browser to drop all old sessions
+                    cookie.setMaxAge(0);
+                    cookie.setValue("");
+                    rsp.addCookie(cookie);
+                }
+            }
+        }
+    }
+
     /**
      * Returns true if this {@link SecurityRealm} allows online sign-up.
-     * This creates a hyperlink that redirects users to <tt>CONTEXT_ROOT/signUp</tt>,
-     * which will be served by the <tt>signup.jelly</tt> view of this class.
+     * This creates a hyperlink that redirects users to {@code CONTEXT_ROOT/signUp},
+     * which will be served by the {@code signup.jelly} view of this class.
      *
      * <p>
      * If the implementation needs to redirect the user to a different URL
-     * for signing up, use the following jelly script as <tt>signup.jelly</tt>
+     * for signing up, use the following jelly script as {@code signup.jelly}
      *
-     * <pre><xmp>
+     * <pre>{@code <xmp>
      * <st:redirect url="http://www.sun.com/" xmlns:st="jelly:stapler"/>
-     * </xmp></pre>
+     * </xmp>}</pre>
      */
     public boolean allowsSignup() {
         Class clz = getClass();
@@ -353,8 +387,7 @@ public abstract class SecurityRealm extends AbstractDescribableImpl<SecurityReal
     /**
      * If this {@link SecurityRealm} supports a look up of {@link GroupDetails} by their names, override this method
      * to provide the look up.
-     * <p/>
-     * <p/>
+     * <p>
      * This information, when available, can be used by {@link AuthorizationStrategy}s to improve the UI and
      * error diagnostics for the user.
      *
@@ -401,7 +434,10 @@ public abstract class SecurityRealm extends AbstractDescribableImpl<SecurityReal
         if (captchaSupport != null) {
             String id = req.getSession().getId();
             rsp.setContentType("image/png");
-            rsp.addHeader("Cache-Control", "no-cache");
+            // source: https://stackoverflow.com/a/3414217
+            rsp.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+            rsp.setHeader("Pragma", "no-cache");
+            rsp.setHeader("Expires", "0");
             captchaSupport.generateImage(id, rsp.getOutputStream());
         }
     }
@@ -494,7 +530,7 @@ public abstract class SecurityRealm extends AbstractDescribableImpl<SecurityReal
      * @return Encoded URI where we should go back after successful login
      *         or "/" if no way back or an issue occurred
      *
-     * @since TODO
+     * @since 2.4
      */
     @Restricted(DoNotUse.class)
     public static String getFrom() {
@@ -523,11 +559,8 @@ public abstract class SecurityRealm extends AbstractDescribableImpl<SecurityReal
 
         // If deduced entry point isn't deduced yet or the content is a blank value
         // use the root web point "/" as a fallback
-        if (StringUtils.isBlank(from)) {
-            from = "/";
-        }
-        from.trim();
-
+        from = StringUtils.defaultIfBlank(from, "/").trim();
+        
         // Encode the return value
         try {
             returnValue = java.net.URLEncoder.encode(from, "UTF-8");
@@ -552,15 +585,6 @@ public abstract class SecurityRealm extends AbstractDescribableImpl<SecurityReal
         }
 
         /**
-         * This special instance is not configurable explicitly,
-         * so it doesn't have a descriptor.
-         */
-        @Override
-        public Descriptor<SecurityRealm> getDescriptor() {
-            return null;
-        }
-
-        /**
          * There's no group.
          */
         @Override
@@ -581,6 +605,21 @@ public abstract class SecurityRealm extends AbstractDescribableImpl<SecurityReal
          */
         private Object readResolve() {
             return NO_AUTHENTICATION;
+        }
+        
+        @Extension(ordinal=-100)
+        @Symbol("none")
+        public static class DescriptorImpl extends Descriptor<SecurityRealm> {
+
+            @Override
+            public String getDisplayName() {
+                return Messages.NoneSecurityRealm_DisplayName();
+            }
+            
+            @Override
+            public SecurityRealm newInstance(StaplerRequest req, JSONObject formData) throws Descriptor.FormException {
+                return NO_AUTHENTICATION;
+            }    
         }
     }
 
@@ -628,7 +667,7 @@ public abstract class SecurityRealm extends AbstractDescribableImpl<SecurityReal
             rms.setUserDetailsService(uds);
             /*
                 TokenBasedRememberMeServices needs to be used in conjunction with RememberMeAuthenticationProvider,
-                and both needs to use the same key (this is a reflection of a poor design in AcgeiSecurity, if you ask me)
+                and both needs to use the same key (this is a reflection of a poor design in AcegiSecurity, if you ask me)
                 and various security plugins have its own groovy script that configures them.
 
                 So if we change this, it creates a painful situation for those plugins by forcing them to choose
@@ -636,7 +675,7 @@ public abstract class SecurityRealm extends AbstractDescribableImpl<SecurityReal
 
                 So we keep this here.
              */
-            rms.setKey(Jenkins.getInstance().getSecretKey());
+            rms.setKey(Jenkins.get().getSecretKey());
             rms.setParameter("remember_me"); // this is the form field name in login.jelly
             return rms;
         }
@@ -649,13 +688,13 @@ public abstract class SecurityRealm extends AbstractDescribableImpl<SecurityReal
      *      Use {@link #all()} for read access, and use {@link Extension} for registration.
      */
     @Deprecated
-    public static final DescriptorList<SecurityRealm> LIST = new DescriptorList<SecurityRealm>(SecurityRealm.class);
+    public static final DescriptorList<SecurityRealm> LIST = new DescriptorList<>(SecurityRealm.class);
 
     /**
      * Returns all the registered {@link SecurityRealm} descriptors.
      */
     public static DescriptorExtensionList<SecurityRealm,Descriptor<SecurityRealm>> all() {
-        return Jenkins.getInstance().<SecurityRealm,Descriptor<SecurityRealm>>getDescriptorList(SecurityRealm.class);
+        return Jenkins.get().getDescriptorList(SecurityRealm.class);
     }
 
 

@@ -24,16 +24,19 @@
 package hudson.model;
 
 import hudson.ExtensionList;
+import hudson.ExtensionListListener;
 import hudson.ExtensionPoint;
 import hudson.init.Initializer;
 import hudson.triggers.SafeTimerTask;
 import jenkins.util.Timer;
 
+import java.util.HashSet;
 import java.util.Random;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
-import static hudson.init.InitMilestone.JOB_LOADED;
+import static hudson.init.InitMilestone.JOB_CONFIG_ADAPTED;
 
 
 /**
@@ -89,12 +92,18 @@ public abstract class AperiodicWork extends SafeTimerTask implements ExtensionPo
         Timer.get().schedule(getNewInstance(), getRecurrencePeriod(), TimeUnit.MILLISECONDS);
     }
 
-    @Initializer(after= JOB_LOADED)
+    @Initializer(after= JOB_CONFIG_ADAPTED)
     public static void init() {
         // start all AperidocWorks
+        ExtensionList<AperiodicWork> extensionList = all();
+        extensionList.addListener(new AperiodicWorkExtensionListListener(extensionList));
         for (AperiodicWork p : AperiodicWork.all()) {
-            Timer.get().schedule(p, p.getInitialDelay(), TimeUnit.MILLISECONDS);
+            scheduleAperiodWork(p);
         }
+    }
+
+    private static void scheduleAperiodWork(AperiodicWork ap) {
+        Timer.get().schedule(ap, ap.getInitialDelay(), TimeUnit.MILLISECONDS);
     }
 
     protected abstract void doAperiodicRun();
@@ -107,4 +116,29 @@ public abstract class AperiodicWork extends SafeTimerTask implements ExtensionPo
     }
 
     private static final Random RANDOM = new Random();
+
+    /**
+     * ExtensionListener that will kick off any new AperiodWork extensions from plugins that are dynamically
+     * loaded.
+     */
+    private static class AperiodicWorkExtensionListListener extends ExtensionListListener {
+
+        private final Set<AperiodicWork> registered = new HashSet<>();
+
+        AperiodicWorkExtensionListListener(ExtensionList<AperiodicWork> initiallyRegistered) {
+            registered.addAll(initiallyRegistered);
+        }
+
+        @Override
+        public void onChange() {
+            synchronized (registered) {
+                for (AperiodicWork p : AperiodicWork.all()) {
+                    if (!registered.contains(p)) {
+                        scheduleAperiodWork(p);
+                        registered.add(p);
+                    }
+                }
+            }
+        }
+    }
 }

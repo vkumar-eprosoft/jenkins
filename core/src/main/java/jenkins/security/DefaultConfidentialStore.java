@@ -4,6 +4,10 @@ import hudson.FilePath;
 import hudson.Util;
 import hudson.util.Secret;
 import hudson.util.TextFile;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import jenkins.model.Jenkins;
 
 import javax.crypto.Cipher;
@@ -11,8 +15,6 @@ import javax.crypto.CipherInputStream;
 import javax.crypto.CipherOutputStream;
 import javax.crypto.SecretKey;
 import java.io.File;
-import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
@@ -46,7 +48,7 @@ public class DefaultConfidentialStore extends ConfidentialStore {
     private final SecretKey masterKey;
 
     public DefaultConfidentialStore() throws IOException, InterruptedException {
-        this(new File(Jenkins.getInstance().getRootDir(),"secrets"));
+        this(new File(Jenkins.get().getRootDir(),"secrets"));
     }
 
     public DefaultConfidentialStore(File rootDir) throws IOException, InterruptedException {
@@ -71,19 +73,18 @@ public class DefaultConfidentialStore extends ConfidentialStore {
      */
     @Override
     protected void store(ConfidentialKey key, byte[] payload) throws IOException {
-        CipherOutputStream cos=null;
-        FileOutputStream fos=null;
         try {
             Cipher sym = Secret.getCipher("AES");
             sym.init(Cipher.ENCRYPT_MODE, masterKey);
-            cos = new CipherOutputStream(fos=new FileOutputStream(getFileFor(key)), sym);
-            cos.write(payload);
-            cos.write(MAGIC);
+            try (OutputStream fos = Files.newOutputStream(getFileFor(key).toPath());
+                 CipherOutputStream cos = new CipherOutputStream(fos, sym)) {
+                cos.write(payload);
+                cos.write(MAGIC);
+            }
         } catch (GeneralSecurityException e) {
             throw new IOException("Failed to persist the key: "+key.getId(),e);
-        } finally {
-            IOUtils.closeQuietly(cos);
-            IOUtils.closeQuietly(fos);
+        } catch (InvalidPathException e) {
+            throw new IOException(e);
         }
     }
 
@@ -95,28 +96,27 @@ public class DefaultConfidentialStore extends ConfidentialStore {
      */
     @Override
     protected byte[] load(ConfidentialKey key) throws IOException {
-        CipherInputStream cis=null;
-        FileInputStream fis=null;
         try {
             File f = getFileFor(key);
             if (!f.exists())    return null;
 
             Cipher sym = Secret.getCipher("AES");
             sym.init(Cipher.DECRYPT_MODE, masterKey);
-            cis = new CipherInputStream(fis=new FileInputStream(f), sym);
-            byte[] bytes = IOUtils.toByteArray(cis);
-            return verifyMagic(bytes);
+            try (InputStream fis=Files.newInputStream(f.toPath());
+                 CipherInputStream cis = new CipherInputStream(fis, sym)) {
+                byte[] bytes = IOUtils.toByteArray(cis);
+                return verifyMagic(bytes);
+            }
         } catch (GeneralSecurityException e) {
             throw new IOException("Failed to load the key: "+key.getId(),e);
+        } catch (InvalidPathException e) {
+            throw new IOException(e);
         } catch (IOException x) {
             if (x.getCause() instanceof BadPaddingException) {
                 return null; // broken somehow
             } else {
                 throw x;
             }
-        } finally {
-            IOUtils.closeQuietly(cis);
-            IOUtils.closeQuietly(fis);
         }
     }
 
@@ -138,6 +138,11 @@ public class DefaultConfidentialStore extends ConfidentialStore {
 
     private File getFileFor(ConfidentialKey key) {
         return new File(rootDir, key.getId());
+    }
+
+    @Override
+    SecureRandom secureRandom() {
+        return sr;
     }
 
     public byte[] randomBytes(int size) {

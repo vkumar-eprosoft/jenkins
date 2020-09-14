@@ -28,6 +28,8 @@ import com.sun.jna.Native;
 import com.sun.jna.StringArray;
 
 import java.io.IOException;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import static hudson.util.jna.GNUCLibrary.*;
 
@@ -54,20 +56,22 @@ public class UnixLifecycle extends Lifecycle {
 
             // if we are running as daemon, don't fork into background one more time during restart
             args.remove("--daemon");
-        } catch (UnsupportedOperationException e) {
-            // can't restart
-            failedToObtainArgs = e;
-        } catch (LinkageError e) {
-            // see HUDSON-3875
+        } catch (UnsupportedOperationException | LinkageError e) {
+            // can't restart / see HUDSON-3875
             failedToObtainArgs = e;
         }
     }
 
     @Override
     public void restart() throws IOException, InterruptedException {
-        Jenkins h = Jenkins.getInstanceOrNull(); // guard against repeated concurrent calls to restart
-        if (h != null)
-            h.cleanUp();
+        Jenkins jenkins = Jenkins.getInstanceOrNull(); // guard against repeated concurrent calls to restart
+        try {
+            if (jenkins != null) {
+                jenkins.cleanUp();
+            }
+        } catch (Exception e) {
+            LOGGER.log(Level.SEVERE, "Failed to clean up. Restart will continue.", e);
+        }
 
         // close all files upon exec, except stdin, stdout, and stderr
         int sz = LIBC.getdtablesize();
@@ -79,7 +83,7 @@ public class UnixLifecycle extends Lifecycle {
 
         // exec to self
         String exe = args.get(0);
-        LIBC.execvp(exe, new StringArray(args.toArray(new String[args.size()])));
+        LIBC.execvp(exe, new StringArray(args.toArray(new String[0])));
         throw new IOException("Failed to exec '"+exe+"' "+LIBC.strerror(Native.getLastError()));
     }
 
@@ -96,4 +100,6 @@ public class UnixLifecycle extends Lifecycle {
         if (args==null)
             throw new RestartNotSupportedException("Failed to obtain the command line arguments of the process",failedToObtainArgs);
     }
+
+    private static final Logger LOGGER = Logger.getLogger(UnixLifecycle.class.getName());
 }

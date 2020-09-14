@@ -25,13 +25,25 @@ package hudson.tasks;
 
 import hudson.FilePath;
 import hudson.Extension;
+import hudson.Util;
 import hudson.model.AbstractProject;
+import hudson.util.FormValidation;
 import hudson.util.LineEndingConversion;
-import net.sf.json.JSONObject;
+import jenkins.tasks.filters.EnvVarsFilterLocalRule;
+import jenkins.tasks.filters.EnvVarsFilterLocalRuleDescriptor;
 import org.jenkinsci.Symbol;
+import org.kohsuke.accmod.Restricted;
+import org.kohsuke.accmod.restrictions.Beta;
+import org.kohsuke.accmod.restrictions.DoNotUse;
+import org.kohsuke.accmod.restrictions.NoExternalUse;
 import org.kohsuke.stapler.DataBoundConstructor;
-import org.kohsuke.stapler.StaplerRequest;
-import java.io.ObjectStreamException;
+import org.kohsuke.stapler.DataBoundSetter;
+import org.kohsuke.stapler.QueryParameter;
+
+import java.util.ArrayList;
+import java.util.List;
+
+import edu.umd.cs.findbugs.annotations.CheckForNull;
 
 /**
  * Executes commands by using Windows batch file.
@@ -43,6 +55,19 @@ public class BatchFile extends CommandInterpreter {
     public BatchFile(String command) {
         super(LineEndingConversion.convertEOL(command, LineEndingConversion.EOLType.Windows));
     }
+
+    /**
+     * Set local environment variable filter rules
+     * @param configuredLocalRules list of local environment filter rules
+     * @since 2.246
+     */
+    @Restricted(Beta.class)
+    @DataBoundSetter
+    public void setConfiguredLocalRules(List<EnvVarsFilterLocalRule> configuredLocalRules) {
+        this.configuredLocalRules = configuredLocalRules;
+    }
+
+    private Integer unstableReturn;
 
     public String[] buildCommandLine(FilePath script) {
         return new String[] {"cmd","/c","call",script.getRemote()};
@@ -56,8 +81,27 @@ public class BatchFile extends CommandInterpreter {
         return ".bat";
     }
 
-    private Object readResolve() throws ObjectStreamException {
-        return new BatchFile(command);
+    @CheckForNull
+    public final Integer getUnstableReturn() {
+        return Integer.valueOf(0).equals(unstableReturn) ? null : unstableReturn;
+    }
+
+    @DataBoundSetter
+    public void setUnstableReturn(Integer unstableReturn) {
+        this.unstableReturn = unstableReturn;
+    }
+
+    @Override
+    protected boolean isErrorlevelForUnstableBuild(int exitCode) {
+        return this.unstableReturn != null && exitCode != 0 && this.unstableReturn.equals(exitCode);
+    }
+
+    private Object readResolve() {
+        BatchFile batch = new BatchFile(command);
+        batch.setUnstableReturn(unstableReturn);
+        // backward compatibility
+        batch.setConfiguredLocalRules(configuredLocalRules == null ? new ArrayList<>() : configuredLocalRules);
+        return batch;
     }
 
     @Extension @Symbol("batchFile")
@@ -71,13 +115,38 @@ public class BatchFile extends CommandInterpreter {
             return Messages.BatchFile_DisplayName();
         }
 
-        @Override
-        public Builder newInstance(StaplerRequest req, JSONObject data) {
-            return new BatchFile(data.getString("command"));
+        /**
+         * Performs on-the-fly validation of the errorlevel.
+         */
+        @Restricted(DoNotUse.class)
+        public FormValidation doCheckUnstableReturn(@QueryParameter String value) {
+            value = Util.fixEmptyAndTrim(value);
+            if (value == null) {
+                return FormValidation.ok();
+            }
+            long unstableReturn;
+            try {
+                unstableReturn = Long.parseLong(value);
+            } catch (NumberFormatException e) {
+                return FormValidation.error(hudson.model.Messages.Hudson_NotANumber());
+            }
+            if (unstableReturn == 0) {
+                return FormValidation.warning(hudson.tasks.Messages.BatchFile_invalid_exit_code_zero());
+            }
+            if (unstableReturn < Integer.MIN_VALUE || unstableReturn > Integer.MAX_VALUE) {
+                return FormValidation.error(hudson.tasks.Messages.BatchFile_invalid_exit_code_range(unstableReturn));
+            }
+            return FormValidation.ok();
         }
 
         public boolean isApplicable(Class<? extends AbstractProject> jobType) {
             return true;
+        }
+
+        // used by Jelly view
+        @Restricted(NoExternalUse.class)
+        public List<EnvVarsFilterLocalRuleDescriptor> getApplicableLocalRules() {
+            return EnvVarsFilterLocalRuleDescriptor.allApplicableFor(BatchFile.class);
         }
     }
 }

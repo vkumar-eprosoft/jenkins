@@ -36,7 +36,7 @@ import hudson.model.Descriptor;
 import hudson.util.DescriptorList;
 
 import java.util.List;
-import javax.annotation.CheckForNull;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
 
 import org.kohsuke.stapler.export.Exported;
 import org.kohsuke.stapler.export.ExportedBean;
@@ -48,7 +48,7 @@ import org.kohsuke.stapler.export.ExportedBean;
  * <dl>
  * <dt>column.jelly</dt>
  * <dd>
- * Invoked from {@link ComputerSet} <tt>index.jelly</tt> to render a column.
+ * Invoked from {@link ComputerSet} {@code index.jelly} to render a column.
  * The {@link NodeMonitor} instance is accessible through the "from" variable.
  * Also see {@link #getColumnCaption()}.
  *
@@ -81,7 +81,7 @@ public abstract class NodeMonitor implements ExtensionPoint, Describable<NodeMon
     }
 
     public AbstractNodeMonitorDescriptor<?> getDescriptor() {
-        return (AbstractNodeMonitorDescriptor<?>) Jenkins.getInstance().getDescriptorOrDie(getClass());
+        return (AbstractNodeMonitorDescriptor<?>) Jenkins.get().getDescriptorOrDie(getClass());
     }
 
     /**
@@ -140,12 +140,12 @@ public abstract class NodeMonitor implements ExtensionPoint, Describable<NodeMon
      *      Use {@link #all()} for read access and {@link Extension} for registration.
      */
     @Deprecated
-    public static final DescriptorList<NodeMonitor> LIST = new DescriptorList<NodeMonitor>(NodeMonitor.class);
+    public static final DescriptorList<NodeMonitor> LIST = new DescriptorList<>(NodeMonitor.class);
 
     /**
      * Returns all the registered {@link NodeMonitor} descriptors.
      */
     public static DescriptorExtensionList<NodeMonitor,Descriptor<NodeMonitor>> all() {
-        return Jenkins.getInstance().<NodeMonitor,Descriptor<NodeMonitor>>getDescriptorList(NodeMonitor.class);
+        return Jenkins.get().getDescriptorList(NodeMonitor.class);
     }
 }

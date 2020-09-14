@@ -16,6 +16,8 @@ import org.kohsuke.stapler.StaplerProxy;
 import org.kohsuke.stapler.StaplerRequest;
 import org.kohsuke.stapler.interceptor.RequirePOST;
 
+import edu.umd.cs.findbugs.annotations.CheckReturnValue;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import java.io.BufferedReader;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -24,6 +26,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
+import java.nio.charset.Charset;
 import java.util.Collection;
 import java.util.Enumeration;
 import java.util.logging.Logger;
@@ -52,12 +55,10 @@ public class AdminWhitelistRule implements StaplerProxy {
      */
     public final FilePathRuleConfig filePathRules;
 
-    private final Jenkins jenkins;
-
     private boolean masterKillSwitch;
 
     public AdminWhitelistRule() throws IOException, InterruptedException {
-        this.jenkins = Jenkins.getInstance();
+        final Jenkins jenkins = Jenkins.get();
 
         // while this file is not a secret, write access to this file is dangerous,
         // so put this in the better-protected part of $JENKINS_HOME, which is in secrets/
@@ -79,27 +80,32 @@ public class AdminWhitelistRule implements StaplerProxy {
                 whitelisted);
         this.filePathRules = new FilePathRuleConfig(
                 new File(jenkins.getRootDir(),"secrets/filepath-filters.d/50-gui.conf"));
-        this.masterKillSwitch = loadMasterKillSwitchFile();
+
+        File f = getMasterKillSwitchFile(jenkins);
+        this.masterKillSwitch = loadMasterKillSwitchFile(f);
     }
 
     /**
-     * Reads the master kill switch.
+     * Reads the master kill switch from a file.
      *
      * Instead of {@link FileBoolean}, we use a text file so that the admin can prevent Jenkins from
      * writing this to file.
+     * @param f File to load
+     * @return {@code true} if the file was loaded, {@code false} otherwise
      */
-    private boolean loadMasterKillSwitchFile() {
-        File f = getMasterKillSwitchFile();
+    @CheckReturnValue
+    private boolean loadMasterKillSwitchFile(@NonNull File f) {
         try {
             if (!f.exists())    return true;
-            return Boolean.parseBoolean(FileUtils.readFileToString(f).trim());
+            return Boolean.parseBoolean(FileUtils.readFileToString(f, Charset.defaultCharset()).trim());
         } catch (IOException e) {
             LOGGER.log(WARNING, "Failed to read "+f, e);
             return false;
         }
     }
 
-    private File getMasterKillSwitchFile() {
+    @NonNull
+    private File getMasterKillSwitchFile(@NonNull Jenkins jenkins) {
         return new File(jenkins.getRootDir(),"secrets/slave-to-master-security-kill-switch");
     }
 
@@ -109,14 +115,14 @@ public class AdminWhitelistRule implements StaplerProxy {
     private InputStream transformForWindows(InputStream src) throws IOException {
         BufferedReader r = new BufferedReader(new InputStreamReader(src));
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        PrintStream p = new PrintStream(out);
-        String line;
-        while ((line=r.readLine())!=null) {
-            if (!line.startsWith("#") && Functions.isWindows())
-                line = line.replace("/","\\\\");
-            p.println(line);
+        try (PrintStream p = new PrintStream(out)) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                if (!line.startsWith("#") && Functions.isWindows())
+                    line = line.replace("/", "\\\\");
+                p.println(line);
+            }
         }
-        p.close();
         return new ByteArrayInputStream(out.toByteArray());
     }
 
@@ -155,21 +161,19 @@ public class AdminWhitelistRule implements StaplerProxy {
 
     @RequirePOST
     public HttpResponse doSubmit(StaplerRequest req) throws IOException {
-        jenkins.checkPermission(Jenkins.RUN_SCRIPTS);
-
-        String whitelist = Util.fixNull(req.getParameter("whitelist"));
-        if (!whitelist.endsWith("\n"))
-            whitelist+="\n";
+        StringBuilder whitelist = new StringBuilder(Util.fixNull(req.getParameter("whitelist")));
+        if ((whitelist.length() > 0) && (whitelist.charAt(whitelist.length() - 1) != '\n'))
+            whitelist.append("\n");
 
         Enumeration e = req.getParameterNames();
         while (e.hasMoreElements()) {
             String name = (String) e.nextElement();
             if (name.startsWith("class:")) {
-                whitelist += name.substring(6)+"\n";
+                whitelist.append(name.substring(6)).append("\n");
             }
         }
 
-        whitelisted.set(whitelist);
+        whitelisted.set(whitelist.toString());
 
         String newRules = Util.fixNull(req.getParameter("filePathRules"));
         filePathRules.parseTest(newRules);  // test first before writing a potentially broken rules
@@ -206,11 +210,13 @@ public class AdminWhitelistRule implements StaplerProxy {
     }
 
     public void setMasterKillSwitch(boolean state) {
+        final Jenkins jenkins = Jenkins.get();
         try {
-            jenkins.checkPermission(Jenkins.RUN_SCRIPTS);
-            FileUtils.writeStringToFile(getMasterKillSwitchFile(),Boolean.toString(state));
+            jenkins.checkPermission(Jenkins.ADMINISTER);
+            File f = getMasterKillSwitchFile(jenkins);
+            FileUtils.writeStringToFile(f, Boolean.toString(state), Charset.defaultCharset());
             // treat the file as the canonical source of information in case write fails
-            masterKillSwitch = loadMasterKillSwitchFile();
+            masterKillSwitch = loadMasterKillSwitchFile(f);
         } catch (IOException e) {
             LOGGER.log(WARNING, "Failed to write master kill switch", e);
         }
@@ -221,7 +227,7 @@ public class AdminWhitelistRule implements StaplerProxy {
      */
     @Override
     public Object getTarget() {
-        jenkins.checkPermission(Jenkins.RUN_SCRIPTS);
+        Jenkins.get().checkPermission(Jenkins.ADMINISTER);
         return this;
     }
 

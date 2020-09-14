@@ -32,16 +32,19 @@ import hudson.EnvVars;
 import hudson.slaves.NodeSpecific;
 import hudson.tools.ToolInstallation;
 import hudson.tools.ToolDescriptor;
+import hudson.tools.ToolInstaller;
 import hudson.tools.ToolProperty;
-import hudson.tools.JDKInstaller;
 import hudson.util.XStream2;
 
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Constructor;
 import java.util.Map;
 import java.util.List;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import jenkins.model.Jenkins;
 import org.jenkinsci.Symbol;
@@ -61,6 +64,7 @@ public final class JDK extends ToolInstallation implements NodeSpecific<JDK>, En
      * @since 1.577
      */
     public static final String DEFAULT_NAME = "(System)";
+    private static final long serialVersionUID = -3318291200160313357L;
 
     @Restricted(NoExternalUse.class)
     public static boolean isDefaultName(String name) {
@@ -78,7 +82,7 @@ public final class JDK extends ToolInstallation implements NodeSpecific<JDK>, En
     private transient String javaHome;
 
     public JDK(String name, String javaHome) {
-        super(name, javaHome, Collections.<ToolProperty<?>>emptyList());
+        super(name, javaHome, Collections.emptyList());
     }
 
     @DataBoundConstructor
@@ -160,9 +164,7 @@ public final class JDK extends ToolInstallation implements NodeSpecific<JDK>, En
             TaskListener listener = new StreamTaskListener(new NullStream());
             Launcher launcher = n.createLauncher(listener);
             return launcher.launch().cmds("java","-fullversion").stdout(listener).join()==0;
-        } catch (IOException e) {
-            return false;
-        } catch (InterruptedException e) {
+        } catch (IOException | InterruptedException e) {
             return false;
         }
     }
@@ -175,16 +177,26 @@ public final class JDK extends ToolInstallation implements NodeSpecific<JDK>, En
         }
 
         public @Override JDK[] getInstallations() {
-            return Jenkins.getInstance().getJDKs().toArray(new JDK[0]);
+            return Jenkins.get().getJDKs().toArray(new JDK[0]);
         }
 
         public @Override void setInstallations(JDK... jdks) {
-            Jenkins.getInstance().setJDKs(Arrays.asList(jdks));
+            Jenkins.get().setJDKs(Arrays.asList(jdks));
         }
 
         @Override
-        public List<JDKInstaller> getDefaultInstallers() {
-            return Collections.singletonList(new JDKInstaller(null,false));
+        public List<? extends ToolInstaller> getDefaultInstallers() {
+            try {
+                Class<? extends ToolInstaller> jdkInstallerClass = Jenkins.get().getPluginManager()
+                        .uberClassLoader.loadClass("hudson.tools.JDKInstaller").asSubclass(ToolInstaller.class);
+                Constructor<? extends ToolInstaller> constructor = jdkInstallerClass.getConstructor(String.class, boolean.class);
+                return Collections.singletonList(constructor.newInstance(null, false));
+            } catch (ClassNotFoundException e) {
+                return Collections.emptyList();
+            } catch (Exception e) {
+                LOGGER.log(Level.WARNING, "Unable to get default installer", e);
+                return Collections.emptyList();
+            }
         }
 
         /**
@@ -211,4 +223,6 @@ public final class JDK extends ToolInstallation implements NodeSpecific<JDK>, En
             return ((JDK)obj).javaHome;
         }
     }
+
+    private static final Logger LOGGER = Logger.getLogger(JDK.class.getName());
 }

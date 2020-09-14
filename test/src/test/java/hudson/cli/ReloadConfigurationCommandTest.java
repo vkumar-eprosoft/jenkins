@@ -48,6 +48,7 @@ import static hudson.cli.CLICommandInvoker.Matcher.succeededSilently;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
+import org.jvnet.hudson.test.MockAuthorizationStrategy;
 
 /**
  * @author pjanouse
@@ -59,13 +60,20 @@ public class ReloadConfigurationCommandTest {
     @Rule public final JenkinsRule j = new JenkinsRule();
 
     @Before public void setUp() {
-        command = new CLICommandInvoker(j, "reload-configuration");
+        j.jenkins.setSecurityRealm(j.createDummySecurityRealm());
+        ReloadConfigurationCommand cmd = new ReloadConfigurationCommand();
+        cmd.setTransportAuth(User.get("user").impersonate()); // TODO https://github.com/jenkinsci/jenkins-test-harness/pull/53 use CLICommandInvoker.asUser
+        command = new CLICommandInvoker(j, cmd);
+        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy()
+                .grant(Jenkins.READ).everywhere().toAuthenticated()
+                .grant(Jenkins.MANAGE).everywhere().toAuthenticated()
+        );
     }
 
     @Test
     public void reloadConfigurationShouldFailWithoutAdministerPermission() throws Exception {
-        final CLICommandInvoker.Result result = command
-                .authorizedTo(Jenkins.READ).invoke();
+        j.jenkins.setAuthorizationStrategy(new MockAuthorizationStrategy().grant(Jenkins.READ).everywhere().toAuthenticated());
+        final CLICommandInvoker.Result result = command.invoke();
 
         assertThat(result, failedWith(6));
         assertThat(result, hasNoStandardOutput());
@@ -102,17 +110,22 @@ public class ReloadConfigurationCommandTest {
 
     @Test
     public void reloadUserConfig() throws Exception {
+        String originalName = "oldName";
+        String temporaryName = "newName";
+        {
         User user = User.get("some_user", true, null);
-        user.setFullName("oldName");
+        user.setFullName(originalName);
         user.save();
+        assertThat(user.getFullName(), equalTo(originalName));
 
-        replace("users/some_user/config.xml", "oldName", "newName");
-
-        assertThat(user.getFullName(), equalTo("oldName"));
-
+        user.setFullName(temporaryName);
+        assertThat(user.getFullName(), equalTo(temporaryName));
+        }
         reloadJenkinsConfigurationViaCliAndWait();
-
-        assertThat(user.getFullName(), equalTo("newName"));
+        {
+        User user = User.getById("some_user", false);
+        assertThat(user.getFullName(), equalTo(originalName));
+        }
     }
 
     @Test
@@ -151,7 +164,7 @@ public class ReloadConfigurationCommandTest {
     @Ignore // Until fixed JENKINS-8217
     @Test
     public void reloadDescriptorConfig() throws Exception {
-        Mailer.DescriptorImpl desc = j.jenkins.getExtensionList(Mailer.DescriptorImpl.class).get(0);;
+        Mailer.DescriptorImpl desc = j.jenkins.getExtensionList(Mailer.DescriptorImpl.class).get(0);
         desc.setDefaultSuffix("@oldSuffix");
         desc.save();
 
@@ -165,17 +178,9 @@ public class ReloadConfigurationCommandTest {
     }
 
     private void reloadJenkinsConfigurationViaCliAndWait() throws Exception {
-        final CLICommandInvoker.Result result = command
-                .authorizedTo(Jenkins.READ, Jenkins.ADMINISTER).invoke();
+        final CLICommandInvoker.Result result = command.invoke();
 
         assertThat(result, succeededSilently());
-
-        // reload-configuration is performed in a separate thread
-        // we have to wait until it finishes
-        while (!(j.jenkins.servletContext.getAttribute("app") instanceof Jenkins)) {
-            System.out.println("Jenkins reload operation is performing, sleeping 1s...");
-            Thread.sleep(1000);
-        }
     }
 
     private void replace(String path, String search, String replace) {

@@ -34,8 +34,9 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
+import java.util.concurrent.TimeUnit;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import edu.umd.cs.findbugs.annotations.NonNull;
 import javax.servlet.ServletException;
 import static javax.servlet.http.HttpServletResponse.SC_CREATED;
 import jenkins.model.Jenkins;
@@ -58,7 +59,7 @@ import org.kohsuke.stapler.export.ExportedBean;
  * Keeps a list of the parameters defined for a project.
  *
  * <p>
- * This class also implements {@link Action} so that <tt>index.jelly</tt> provides
+ * This class also implements {@link Action} so that {@code index.jelly} provides
  * a form to enter build parameters.
  * <p>The owning job needs a {@code sidepanel.jelly} and should have web methods delegating to {@link ParameterizedJobMixIn#doBuild} and {@link ParameterizedJobMixIn#doBuildWithParameters}.
  * The builds also need a {@code sidepanel.jelly}.
@@ -70,18 +71,12 @@ public class ParametersDefinitionProperty extends OptionalJobProperty<Job<?, ?>>
     private final List<ParameterDefinition> parameterDefinitions;
 
     @DataBoundConstructor
-    public ParametersDefinitionProperty(@Nonnull List<ParameterDefinition> parameterDefinitions) {
-        if (parameterDefinitions == null) {
-            throw new NullPointerException("ParameterDefinitions is null when this is a not valid value");
-        }
-        this.parameterDefinitions = parameterDefinitions;
+    public ParametersDefinitionProperty(@NonNull List<ParameterDefinition> parameterDefinitions) {
+        this.parameterDefinitions = parameterDefinitions != null ? parameterDefinitions : new ArrayList<>();
     }
 
-    public ParametersDefinitionProperty(@Nonnull ParameterDefinition... parameterDefinitions) {
-        if (parameterDefinitions == null) {
-            throw new NullPointerException("ParameterDefinitions is null when this is a not valid value");
-        }
-        this.parameterDefinitions = Arrays.asList(parameterDefinitions) ;
+    public ParametersDefinitionProperty(@NonNull ParameterDefinition... parameterDefinitions) {
+        this.parameterDefinitions = parameterDefinitions != null ? Arrays.asList(parameterDefinitions) : new ArrayList<>();
     }
 
     private Object readResolve() {
@@ -107,21 +102,13 @@ public class ParametersDefinitionProperty extends OptionalJobProperty<Job<?, ?>>
      * Gets the names of all the parameter definitions.
      */
     public List<String> getParameterDefinitionNames() {
-        return new AbstractList<String>() {
-            public String get(int index) {
-                return parameterDefinitions.get(index).getName();
-            }
-
-            public int size() {
-                return parameterDefinitions.size();
-            }
-        };
+        return new DefinitionsAbstractList(this.parameterDefinitions);
     }
 
-    @Nonnull
+    @NonNull
     @Override
     public Collection<Action> getJobActions(Job<?, ?> job) {
-        return Collections.<Action>singleton(this);
+        return Collections.singleton(this);
     }
 
     @Deprecated
@@ -147,10 +134,11 @@ public class ParametersDefinitionProperty extends OptionalJobProperty<Job<?, ?>>
      * This method is supposed to be invoked from {@link ParameterizedJobMixIn#doBuild(StaplerRequest, StaplerResponse, TimeDuration)}.
      */
     public void _doBuild(StaplerRequest req, StaplerResponse rsp, @QueryParameter TimeDuration delay) throws IOException, ServletException {
-        if (delay==null)    delay=new TimeDuration(getJob().getQuietPeriod());
+        if (delay==null)
+            delay=new TimeDuration(TimeUnit.MILLISECONDS.convert(getJob().getQuietPeriod(), TimeUnit.SECONDS));
 
 
-        List<ParameterValue> values = new ArrayList<ParameterValue>();
+        List<ParameterValue> values = new ArrayList<>();
         
         JSONObject formData = req.getSubmittedForm();
         JSONArray a = JSONArray.fromObject(formData.get("parameter"));
@@ -170,8 +158,8 @@ public class ParametersDefinitionProperty extends OptionalJobProperty<Job<?, ?>>
             }
         }
 
-    	WaitingItem item = Jenkins.getInstance().getQueue().schedule(
-                getJob(), delay.getTime(), new ParametersAction(values), new CauseAction(new Cause.UserIdCause()));
+    	WaitingItem item = Jenkins.get().getQueue().schedule(
+                getJob(), delay.getTimeInSeconds(), new ParametersAction(values), new CauseAction(new Cause.UserIdCause()));
         if (item!=null) {
             String url = formData.optString("redirectTo");
             if (url==null || !Util.isSafeToRedirectTo(url))   // avoid open redirect
@@ -189,17 +177,18 @@ public class ParametersDefinitionProperty extends OptionalJobProperty<Job<?, ?>>
     }
 
     public void buildWithParameters(StaplerRequest req, StaplerResponse rsp, @CheckForNull TimeDuration delay) throws IOException, ServletException {
-        List<ParameterValue> values = new ArrayList<ParameterValue>();
+        List<ParameterValue> values = new ArrayList<>();
         for (ParameterDefinition d: parameterDefinitions) {
         	ParameterValue value = d.createValue(req);
         	if (value != null) {
         		values.add(value);
         	}
         }
-        if (delay==null)    delay=new TimeDuration(getJob().getQuietPeriod());
+        if (delay==null)
+            delay=new TimeDuration(TimeUnit.MILLISECONDS.convert(getJob().getQuietPeriod(), TimeUnit.SECONDS));
 
-        Queue.Item item = Jenkins.getInstance().getQueue().schedule2(
-                getJob(), delay.getTime(), new ParametersAction(values), ParameterizedJobMixIn.getBuildCause(getJob(), req)).getItem();
+        Queue.Item item = Jenkins.get().getQueue().schedule2(
+                getJob(), delay.getTimeInSeconds(), new ParametersAction(values), ParameterizedJobMixIn.getBuildCause(getJob(), req)).getItem();
 
         if (item != null) {
             rsp.sendRedirect(SC_CREATED, req.getContextPath() + '/' + item.getUrl());
@@ -211,6 +200,7 @@ public class ParametersDefinitionProperty extends OptionalJobProperty<Job<?, ?>>
     /**
      * Gets the {@link ParameterDefinition} of the given name, if any.
      */
+    @CheckForNull
     public ParameterDefinition getParameterDefinition(String name) {
         for (ParameterDefinition pd : parameterDefinitions)
             if (pd.getName().equals(name))
@@ -221,6 +211,15 @@ public class ParametersDefinitionProperty extends OptionalJobProperty<Job<?, ?>>
     @Extension
     @Symbol("parameters")
     public static class DescriptorImpl extends OptionalJobPropertyDescriptor {
+        @Override
+        public ParametersDefinitionProperty newInstance(StaplerRequest req, JSONObject formData) throws FormException {
+            ParametersDefinitionProperty prop = (ParametersDefinitionProperty)super.newInstance(req, formData);
+            if (prop != null && prop.parameterDefinitions.isEmpty()) {
+                return null;
+            }
+            return prop;
+        }
+
         @Override
         public boolean isApplicable(Class<? extends Job> jobType) {
             return ParameterizedJobMixIn.ParameterizedJob.class.isAssignableFrom(jobType);
@@ -242,5 +241,21 @@ public class ParametersDefinitionProperty extends OptionalJobProperty<Job<?, ?>>
 
     public String getUrlName() {
         return null;
+    }
+
+    private static class DefinitionsAbstractList extends AbstractList<String> {
+        private final List<ParameterDefinition> parameterDefinitions;
+
+        public DefinitionsAbstractList(List<ParameterDefinition> parameterDefinitions) {
+            this.parameterDefinitions = parameterDefinitions;
+        }
+
+        public String get(int index) {
+            return this.parameterDefinitions.get(index).getName();
+        }
+
+        public int size() {
+            return this.parameterDefinitions.size();
+        }
     }
 }

@@ -1,171 +1,126 @@
+#!/usr/bin/env groovy
+
 /*
- * This Jenkinsfile is intended to run on https://ci.jenkins-ci.org and may fail anywhere else.
+ * This Jenkinsfile is intended to run on https://ci.jenkins.io and may fail anywhere else.
  * It makes assumptions about plugins being installed, labels mapping to nodes that can build what is needed, etc.
- *
- * The required labels are "java" and "docker" - "java" would be any node that can run Java builds. It doesn't need
- * to have Java installed, but some setups may have nodes that shouldn't have heavier builds running on them, so we
- * make this explicit. "docker" would be any node with docker installed.
  */
+
+def buildNumber = BUILD_NUMBER as int; if (buildNumber > 1) milestone(buildNumber - 1); milestone(buildNumber) // JENKINS-43353 / JENKINS-58625
 
 // TEST FLAG - to make it easier to turn on/off unit tests for speeding up access to later stuff.
 def runTests = true
+def failFast = false
 
-// Only keep the 10 most recent builds.
-properties([[$class: 'jenkins.model.BuildDiscarderProperty', strategy: [$class: 'LogRotator',
-                                                                        numToKeepStr: '50',
-                                                                        artifactNumToKeepStr: '20']]])
+properties([buildDiscarder(logRotator(numToKeepStr: '50', artifactNumToKeepStr: '3')), durabilityHint('PERFORMANCE_OPTIMIZED')])
 
-String packagingBranch = (binding.hasVariable('packagingBranch')) ? packagingBranch : 'jenkins-2.0'
+// TODO: Restore 'Windows' once https://groups.google.com/forum/#!topic/jenkinsci-dev/v9d-XosOp2s is resolved
+def buildTypes = ['Linux']
+def jdks = [8, 11]
 
-timestampedNode('java') {
+def builds = [:]
+for(i = 0; i < buildTypes.size(); i++) {
+for(j = 0; j < jdks.size(); j++) {
+    def buildType = buildTypes[i]
+    def jdk = jdks[j]
+    builds["${buildType}-jdk${jdk}"] = {
+        // see https://github.com/jenkins-infra/documentation/blob/master/ci.adoc#node-labels for information on what node types are available
+        node(buildType == 'Linux' ? (jdk == 8 ? 'maven' : 'maven-11') : buildType.toLowerCase()) {
+                // First stage is actually checking out the source. Since we're using Multibranch
+                // currently, we can use "checkout scm".
+                stage('Checkout') {
+                    checkout scm
+                }
 
-    // First stage is actually checking out the source. Since we're using Multibranch
-    // currently, we can use "checkout scm".
-    stage "Checkout source"
+                def changelistF = "${pwd tmp: true}/changelist"
+                def m2repo = "${pwd tmp: true}/m2repo"
 
-    checkout scm
+                // Now run the actual build.
+                stage("${buildType} Build / Test") {
+                    timeout(time: 180, unit: 'MINUTES') {
+                        // See below for what this method does - we're passing an arbitrary environment
+                        // variable to it so that JAVA_OPTS and MAVEN_OPTS are set correctly.
+                        withMavenEnv(["JAVA_OPTS=-Xmx1536m -Xms512m",
+                                    "MAVEN_OPTS=-Xmx1536m -Xms512m"], buildType, jdk) {
+                            // Actually run Maven!
+                            // -Dmaven.repo.local=… tells Maven to create a subdir in the temporary directory for the local Maven repository
+                            def mvnCmd = "mvn -Pdebug -U -Dset.changelist help:evaluate -Dexpression=changelist -Doutput=$changelistF clean install ${runTests ? '-Dmaven.test.failure.ignore' : '-DskipTests'} -V -B -ntp -Dmaven.repo.local=$m2repo -e"
 
-    // Now run the actual build.
-    stage "Build and test"
+                            if(isUnix()) {
+                                sh mvnCmd
+                                sh 'git add . && git diff --exit-code HEAD'
+                            } else {
+                                bat mvnCmd
+                            }
+                        }
+                    }
+                }
 
-    // We're wrapping this in a timeout - if it takes more than 180 minutes, kill it.
-    timeout(time: 180, unit: 'MINUTES') {
-        // See below for what this method does - we're passing an arbitrary environment
-        // variable to it so that JAVA_OPTS and MAVEN_OPTS are set correctly.
-        withMavenEnv(["JAVA_OPTS=-Xmx1536m -Xms512m -XX:MaxPermSize=1024m",
-                      "MAVEN_OPTS=-Xmx1536m -Xms512m -XX:MaxPermSize=1024m"]) {
-            // Actually run Maven!
-            // The -Dmaven.repo.local=${pwd()}/.repository means that Maven will create a
-            // .repository directory at the root of the build (which it gets from the
-            // pwd() Workflow call) and use that for the local Maven repository.
-            sh "mvn -Pdebug -U clean install ${runTests ? '-Dmaven.test.failure.ignore=true -Dconcurrency=1' : '-DskipTests'} -V -B -Dmaven.repo.local=${pwd()}/.repository"
+                // Once we've built, archive the artifacts and the test results.
+                stage("${buildType} Publishing") {
+                    if (runTests) {
+                        junit healthScaleFactor: 20.0, testResults: '*/target/surefire-reports/*.xml'
+                        archiveArtifacts allowEmptyArchive: true, artifacts: '**/target/surefire-reports/*.dumpstream'
+                    }
+                    if (buildType == 'Linux' && jdk == jdks[0]) {
+                        def changelist = readFile(changelistF)
+                        dir(m2repo) {
+                            archiveArtifacts artifacts: "**/*$changelist/*$changelist*",
+                                             excludes: '**/*.lastUpdated,**/jenkins-test*/',
+                                             allowEmptyArchive: true, // in case we forgot to reincrementalify
+                                             fingerprint: true
+                        }
+                    }
+                }
         }
     }
+}}
 
-    // Once we've built, archive the artifacts and the test results.
-    stage "Archive artifacts and test results"
-
-    step([$class: 'ArtifactArchiver', artifacts: '**/target/*.jar, **/target/*.war, **/target/*.hpi', fingerprint: true])
-    if (runTests) {
-        step([$class: 'JUnitResultArchiver', healthScaleFactor: 20.0, testResults: '**/target/surefire-reports/*.xml'])
-    }
-}
-
-def debFileName
-def rpmFileName
-def suseFileName
-
-// Run the packaging build on a node with the "docker" label.
-timestampedNode('docker') {
-    // First stage here is getting prepped for packaging.
-    stage "packaging - docker prep"
-
-    // Docker environment to build packagings
-    dir('packaging-docker') {
-        git branch: packagingBranch, url: 'https://github.com/jenkinsci/packaging.git'
-        sh 'docker build -t jenkins-packaging-builder:0.1 docker'
-    }
-
-    stage "packaging - actually packaging"
-    // Working packaging code, separate branch with fixes
-    dir('packaging') {
+// TODO: Restore ATH once https://groups.google.com/forum/#!topic/jenkinsci-dev/v9d-XosOp2s is resolved
+// TODO: ATH flow now supports Java 8 only, it needs to be reworked (INFRA-1690)
+builds.ath = {
+    node("docker&&highmem") {
+        // Just to be safe
         deleteDir()
-
-        docker.image("jenkins-packaging-builder:0.1").inside("-u root") {
-            git branch: packagingBranch, url: 'https://github.com/jenkinsci/packaging.git'
-
-            try {
-                // Saw issues with unstashing inside a container, and not sure copy artifact plugin would work here.
-                // So, simple wget.
-                sh "wget -q ${currentBuild.absoluteUrl}/artifact/war/target/jenkins.war"
-                sh "make clean deb rpm suse BRAND=./branding/jenkins.mk BUILDENV=./env/test.mk CREDENTIAL=./credentials/test.mk WAR=jenkins.war"
-            } catch (Exception e) {
-                error "Packaging failed: ${e}"
-            } finally {
-                // Needed to make sure the output of the build can be deleted by later runs.
-                // Hackish, yes, but rpm builds as a numeric UID only user fail, so...
-                sh "chmod -R a+w target || true"
-                sh "chmod a+w jenkins.war || true"
+        def fileUri
+        def metadataPath
+        dir("sources") {
+            checkout scm
+            withMavenEnv(["JAVA_OPTS=-Xmx1536m -Xms512m",
+                          "MAVEN_OPTS=-Xmx1536m -Xms512m"], 8) {
+                sh "mvn --batch-mode --show-version -Dorg.slf4j.simpleLogger.log.org.apache.maven.cli.transfer.Slf4jMavenTransferListener=warn -DskipTests -am -pl war package -Dmaven.repo.local=${pwd tmp: true}/m2repo"
             }
-            dir("target/debian") {
-                def debFilesFound = findFiles(glob: "*.deb")
-                if (debFilesFound.size() > 0) {
-                    debFileName = debFilesFound[0]?.name
-                }
+            dir("war/target") {
+                fileUri = "file://" + pwd() + "/jenkins.war"
             }
-
-            dir("target/rpm") {
-                def rpmFilesFound = findFiles(glob: "*.rpm")
-                if (rpmFilesFound.size() > 0) {
-                    rpmFileName = rpmFilesFound[0]?.name
-                }
-            }
-
-            dir("target/suse") {
-                def suseFilesFound = findFiles(glob: "*.rpm")
-                if (suseFilesFound.size() > 0) {
-                    suseFileName = suseFilesFound[0]?.name
-                }
-            }
-
-            step([$class: 'ArtifactArchiver', artifacts: 'target/**/*', fingerprint: true])
-
-            // Fail the build if we didn't find at least one of the packages, meaning they weren't built but
-            // somehow make didn't error out.
-            if (debFileName == null || rpmFileName == null || suseFileName  == null) {
-                error "At least one of Debian, RPM or SuSE packages are missing, so failing the build."
-            }
+            metadataPath = pwd() + "/essentials.yml"
         }
-
+        dir("ath") {
+            runATH jenkins: fileUri, metadataFile: metadataPath
+        }
     }
-
 }
 
-stage "Package testing"
-
-if (runTests) {
-    if (!env.BRANCH_NAME.startsWith("PR")) {
-        // NOTE: As of now, a lot of package tests will fail. See https://issues.jenkins-ci.org/issues/?filter=15257 for
-        // possible open JIRAs.
-
-        // Basic parameters
-        String artifactName = (binding.hasVariable('artifactName')) ? artifactName : 'jenkins'
-        String jenkinsPort = (binding.hasVariable('jenkinsPort')) ? jenkinsPort : '8080'
-
-        // Set up
-        String debfile = "artifact://${env.JOB_NAME}/${env.BUILD_NUMBER}#target/debian/${debFileName}"
-        String rpmfile = "artifact://${env.JOB_NAME}/${env.BUILD_NUMBER}#target/rpm/${rpmFileName}"
-        String susefile = "artifact://${env.JOB_NAME}/${env.BUILD_NUMBER}#target/suse/${suseFileName}"
-
-        timestampedNode("docker") {
-            stage "Load Lib"
-            dir('workflowlib') {
-                deleteDir()
-                git branch: packagingBranch, url: 'https://github.com/jenkinsci/packaging.git'
-                flow = load 'workflow/installertest.groovy'
-            }
-        }
-        // Run the real tests within docker node label
-        flow.fetchAndRunJenkinsInstallerTest("docker", rpmfile, susefile, debfile,
-            packagingBranch, artifactName, jenkinsPort)
-    } else {
-        echo "Not running package testing against pull requests"
-    }
-} else {
-    echo "Skipping package tests"
-}
-
+builds.failFast = failFast
+parallel builds
+infra.maybePublishIncrementals()
 
 // This method sets up the Maven and JDK tools, puts them in the environment along
 // with whatever other arbitrary environment variables we passed in, and runs the
 // body we passed in within that environment.
-void withMavenEnv(List envVars = [], def body) {
+void withMavenEnv(List envVars = [], def buildType, def javaVersion, def body) {
+    if (buildType == 'Linux') {
+        // I.e., a Maven container using ACI. No need to install tools.
+        return withEnv(envVars) {
+            body.call()
+        }
+    }
+    
     // The names here are currently hardcoded for my test environment. This needs
     // to be made more flexible.
     // Using the "tool" Workflow call automatically installs those tools on the
     // node.
-    String mvntool = tool name: "mvn3.3.3", type: 'hudson.tasks.Maven$MavenInstallation'
-    String jdktool = tool name: "jdk8_51", type: 'hudson.model.JDK'
+    String mvntool = tool name: "mvn", type: 'hudson.tasks.Maven$MavenInstallation'
+    String jdktool = tool name: "jdk${javaVersion}", type: 'hudson.model.JDK'
 
     // Set JAVA_HOME, MAVEN_HOME and special PATH variables for the tools we're
     // using.
@@ -177,14 +132,5 @@ void withMavenEnv(List envVars = [], def body) {
     // Invoke the body closure we're passed within the environment we've created.
     withEnv(mvnEnv) {
         body.call()
-    }
-}
-
-// Runs the given body within a Timestamper wrapper on the given label.
-def timestampedNode(String label, Closure body) {
-    node(label) {
-        wrap([$class: 'TimestamperBuildWrapper']) {
-            body.call()
-        }
     }
 }

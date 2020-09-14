@@ -24,29 +24,27 @@
 
 package hudson.cli;
 
+import hudson.Functions;
 import hudson.model.FreeStyleProject;
 import hudson.model.Item;
 import hudson.model.Job;
 import hudson.model.Result;
-import hudson.model.Run;
 import hudson.model.labels.LabelAtom;
+import hudson.tasks.BatchFile;
 import hudson.tasks.Shell;
 import jenkins.model.Jenkins;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.jvnet.hudson.test.JenkinsRule;
-
-import java.io.IOException;
+import org.jvnet.hudson.test.Issue;
 
 import static hudson.cli.CLICommandInvoker.Matcher.failedWith;
 import static hudson.cli.CLICommandInvoker.Matcher.hasNoStandardOutput;
 import static hudson.cli.CLICommandInvoker.Matcher.succeeded;
-import static hudson.cli.CLICommandInvoker.Matcher.succeededSilently;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
-import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 import static org.junit.Assert.fail;
 
@@ -78,18 +76,23 @@ public class ConsoleCommandTest {
         assertThat(result, hasNoStandardOutput());
         assertThat(result.stderr(), containsString("ERROR: No such job 'aProject'"));
     }
-
-    @Test public void consoleShouldFailWithoutItemBuildPermission() throws Exception {
-
-        j.createFreeStyleProject("aProject");
-
-        final CLICommandInvoker.Result result = command
-                .authorizedTo(Jenkins.READ, Job.READ)
-                .invokeWithArgs("aProject");
-
-        assertThat(result, failedWith(6));
-        assertThat(result, hasNoStandardOutput());
-        assertThat(result.stderr(), containsString("ERROR: user is missing the Job/Build permission"));
+    
+    @Issue("JENKINS-52181")
+    @Test public void consoleShouldBeAccessibleForUserWithRead() throws Exception {	
+        FreeStyleProject project = j.createFreeStyleProject("aProject");	
+        if (Functions.isWindows()) {
+            project.getBuildersList().add(new BatchFile("echo 1"));
+        } else {
+            project.getBuildersList().add(new Shell("echo 1"));
+        }
+        assertThat(project.scheduleBuild2(0).get().getLog(), containsString("echo 1"));
+        
+        final CLICommandInvoker.Result result = command	
+                .authorizedTo(Jenkins.READ, Job.READ)	
+                .invokeWithArgs("aProject");	
+        
+        assertThat(result, succeeded());
+        assertThat(result.stdout(), containsString("echo 1"));	
     }
 
     @Test public void consoleShouldFailWhenProjectDoesNotExist() throws Exception {
@@ -103,7 +106,7 @@ public class ConsoleCommandTest {
         assertThat(result.stderr(), containsString("ERROR: No such job 'never_created'"));
     }
 
-    @Test public void consoleShouldFailWhenLastBuildDoesNotdExist() throws Exception {
+    @Test public void consoleShouldFailWhenLastBuildDoesNotExist() throws Exception {
 
         j.createFreeStyleProject("aProject");
 
@@ -156,7 +159,11 @@ public class ConsoleCommandTest {
     @Test public void consoleShouldSuccessWithLastBuild() throws Exception {
 
         FreeStyleProject project = j.createFreeStyleProject("aProject");
-        project.getBuildersList().add(new Shell("echo 1"));
+        if (Functions.isWindows()) {
+            project.getBuildersList().add(new BatchFile("echo 1"));
+        } else {
+            project.getBuildersList().add(new Shell("echo 1"));
+        }
         assertThat(project.scheduleBuild2(0).get().getLog(), containsString("echo 1"));
 
         final CLICommandInvoker.Result result = command
@@ -170,7 +177,11 @@ public class ConsoleCommandTest {
     @Test public void consoleShouldSuccessWithSpecifiedBuildNumber() throws Exception {
 
         FreeStyleProject project = j.createFreeStyleProject("aProject");
-        project.getBuildersList().add(new Shell("echo ${BUILD_NUMBER}"));
+        if (Functions.isWindows()) {
+            project.getBuildersList().add(new BatchFile("echo %BUILD_NUMBER%"));
+        } else {
+            project.getBuildersList().add(new Shell("echo ${BUILD_NUMBER}"));
+        }
         assertThat(project.scheduleBuild2(0).get().getLog(), containsString("echo 1"));
         assertThat(project.scheduleBuild2(0).get().getLog(), containsString("echo 2"));
         assertThat(project.scheduleBuild2(0).get().getLog(), containsString("echo 3"));
@@ -184,10 +195,15 @@ public class ConsoleCommandTest {
     }
 
     @Test public void consoleShouldSuccessWithFollow() throws Exception {
-
         FreeStyleProject project = j.createFreeStyleProject("aProject");
-        project.getBuildersList().add(new Shell("echo start - ${BUILD_NUMBER}\nsleep 10s\n"
-                + "echo after sleep - ${BUILD_NUMBER}"));
+        //TODO: do we really want to sleep for 10 seconds?
+        if(Functions.isWindows()) {
+            project.getBuildersList().add(new BatchFile("echo start - %BUILD_NUMBER%\r\n"
+                    + "ping -n 10 127.0.0.1 >nul\r\necho after sleep - %BUILD_NUMBER%"));
+        } else {
+            project.getBuildersList().add(new Shell("echo start - ${BUILD_NUMBER}\nsleep 10s\n"
+                    + "echo after sleep - ${BUILD_NUMBER}"));
+        }
         if (!project.scheduleBuild(0)) {
             fail("Job wasn't scheduled properly");
         }
@@ -229,14 +245,18 @@ public class ConsoleCommandTest {
     @Test public void consoleShouldSuccessWithLastNLines() throws Exception {
 
         FreeStyleProject project = j.createFreeStyleProject("aProject");
-        project.getBuildersList().add(new Shell("echo 1\necho 2\necho 3\necho 4\necho 5"));
+        if(Functions.isWindows()) {
+            project.getBuildersList().add(new BatchFile("echo 1\r\necho 2\r\necho 3\r\necho 4\r\necho 5"));
+        } else {
+            project.getBuildersList().add(new Shell("echo 1\necho 2\necho 3\necho 4\necho 5"));
+        }
         project.scheduleBuild2(0).get();
         assertThat(project.getBuildByNumber(1).getLog(), containsString("echo 1"));
         assertThat(project.getBuildByNumber(1).getLog(), containsString("echo 5"));
 
         final CLICommandInvoker.Result result = command
                 .authorizedTo(Jenkins.READ, Job.READ, Item.BUILD)
-                .invokeWithArgs("aProject", "1", "-n", "4");
+                .invokeWithArgs("aProject", "1", "-n", Functions.isWindows() ? "5" : "4");
 
         assertThat(result, succeeded());
         assertThat(result.stdout(), not(containsString("echo 1")));
@@ -246,9 +266,16 @@ public class ConsoleCommandTest {
     @Test public void consoleShouldSuccessWithLastNLinesAndFollow() throws Exception {
 
         FreeStyleProject project = j.createFreeStyleProject("aProject");
-        project.getBuildersList().add(new Shell("echo 1\necho 2\necho 3\necho 4\necho 5\n"
-            + "sleep 10s\n"
-            + "echo 6\necho 7\necho 8\necho 9"));
+        //TODO: do we really want to sleep for 10 seconds?
+        if (Functions.isWindows()) {
+            // the ver >NUL is to reset ERRORLEVEL so we don't fail (ping causes the error)
+            project.getBuildersList().add(new BatchFile("echo 1\r\necho 2\r\necho 3\r\necho 4\r\necho 5\r\n"
+                    + "ping -n 10 127.0.0.1 >nul\r\necho 6\r\necho 7\r\necho 8\r\necho 9"));
+        } else {
+            project.getBuildersList().add(new Shell("echo 1\necho 2\necho 3\necho 4\necho 5\n"
+                    + "sleep 10s\n"
+                    + "echo 6\necho 7\necho 8\necho 9"));
+        }
 
         if (!project.scheduleBuild(0)) {
             fail("Job wasn't scheduled properly");
@@ -270,7 +297,7 @@ public class ConsoleCommandTest {
 
         CLICommandInvoker.Result result = command
                 .authorizedTo(Jenkins.READ, Job.READ, Item.BUILD)
-                .invokeWithArgs("aProject", "1", "-f", "-n", "4");
+                .invokeWithArgs("aProject", "1", "-f", "-n", Functions.isWindows() ? "5" : "4");
 
         assertThat(result, succeeded());
         assertThat(result.stdout(), not(containsString("echo 1")));

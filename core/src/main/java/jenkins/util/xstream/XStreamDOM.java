@@ -35,10 +35,10 @@ import com.thoughtworks.xstream.io.xml.AbstractXmlReader;
 import com.thoughtworks.xstream.io.xml.AbstractXmlWriter;
 import com.thoughtworks.xstream.io.xml.DocumentReader;
 import com.thoughtworks.xstream.io.xml.XmlFriendlyReplacer;
-import com.thoughtworks.xstream.io.xml.XppDriver;
 import hudson.Util;
 import hudson.util.VariableResolver;
 
+import hudson.util.XStream2;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.Reader;
@@ -90,15 +90,15 @@ import java.util.Stack;
  *
  * With the following XML:
  *
- * <pre>
- * &lt;foo>
- *   &lt;bar>
- *     &lt;payload>
+ * <pre>{@code
+ * <foo>
+ *   <bar>
+ *     <payload>
  *       ...
- *     &lt;/payload>
- *   &lt;/bar>
- * &lt;/foo>
- * </pre>
+ *     </payload>
+ *   </bar>
+ * </foo>
+ * }</pre>
  *
  * <p>
  * The {@link XStreamDOM} object in the bar field will have the "payload" element in its tag name
@@ -181,13 +181,14 @@ public class XStreamDOM {
     public XStreamDOM expandMacro(VariableResolver<String> vars) {
         String[] newAttributes = new String[attributes.length];
         for (int i=0; i<attributes.length; i+=2) {
+            //noinspection PointlessArithmeticExpression
             newAttributes[i+0] = attributes[i]; // name
             newAttributes[i+1] = Util.replaceMacro(attributes[i+1],vars);
         }
 
         List<XStreamDOM> newChildren = null;
         if (children!=null) {
-            newChildren = new ArrayList<XStreamDOM>(children.size());
+            newChildren = new ArrayList<>(children.size());
             for (XStreamDOM d : children)
                 newChildren.add(d.expandMacro(vars));
         }
@@ -241,11 +242,11 @@ public class XStreamDOM {
      * Writes this {@link XStreamDOM} into {@link OutputStream}.
      */
     public void writeTo(OutputStream os) {
-        writeTo(new XppDriver().createWriter(os));
+        writeTo(XStream2.getDefaultDriver().createWriter(os));
     }
 
     public void writeTo(Writer w) {
-        writeTo(new XppDriver().createWriter(w));
+        writeTo(XStream2.getDefaultDriver().createWriter(w));
     }
 
     public void writeTo(HierarchicalStreamWriter w) {
@@ -262,11 +263,11 @@ public class XStreamDOM {
     }
 
     public static XStreamDOM from(InputStream in) {
-        return from(new XppDriver().createReader(in));
+        return from(XStream2.getDefaultDriver().createReader(in));
     }
 
     public static XStreamDOM from(Reader in) {
-        return from(new XppDriver().createReader(in));
+        return from(XStream2.getDefaultDriver().createReader(in));
     }
 
     public static XStreamDOM from(HierarchicalStreamReader in) {
@@ -274,7 +275,7 @@ public class XStreamDOM {
     }
 
     public Map<String, String> getAttributeMap() {
-        Map<String,String> r = new HashMap<String, String>();
+        Map<String,String> r = new HashMap<>();
         for (int i=0; i<attributes.length; i+=2)
             r.put(attributes[i],attributes[i+1]);
         return r;
@@ -306,16 +307,19 @@ public class XStreamDOM {
                     if (node.children.get(i).tagName.equals(child.tagName))
                         count++;
                 boolean more = false;
-                for (int i=pos; !more && i<node.children.size(); i++)
-                    if (node.children.get(i).tagName.equals(child.tagName))
+                for (int i = pos; i < node.children.size(); i++) {
+                    if (node.children.get(i).tagName.equals(child.tagName)) {
                         more = true;
+                        break;
+                    }
+                }
 
                 if (count==0 && !more)  return child.tagName;   // sole child
                 return child.tagName+'['+count+']';
             }
         }
 
-        private final Stack<Pointer> pointers = new Stack<Pointer>();
+        private final Stack<Pointer> pointers = new Stack<>();
 
 
         public ReaderImpl(XStreamDOM current) {
@@ -402,7 +406,7 @@ public class XStreamDOM {
         private static class Pending {
             final String tagName;
             List<XStreamDOM> children;
-            List<String> attributes = new ArrayList<String>();
+            List<String> attributes = new ArrayList<>();
             String value;
 
             private Pending(String tagName) {
@@ -411,7 +415,7 @@ public class XStreamDOM {
 
             void addChild(XStreamDOM dom) {
                 if (children==null)
-                    children = new ArrayList<XStreamDOM>();
+                    children = new ArrayList<>();
                 children.add(dom);
             }
 
@@ -420,7 +424,7 @@ public class XStreamDOM {
             }
         }
 
-        private final Stack<Pending> pendings = new Stack<Pending>();
+        private final Stack<Pending> pendings = new Stack<>();
 
         public WriterImpl() {
             pendings.push(new Pending(null));   // to get the final result
@@ -521,7 +525,7 @@ public class XStreamDOM {
             List<XStreamDOM> children = null;
             String value = null;
             if (r.hasMoreChildren()) {
-                children = new ArrayList<XStreamDOM>();
+                children = new ArrayList<>();
                 while (r.hasMoreChildren()) {
                     children.add(unmarshal(r, context));
                 }

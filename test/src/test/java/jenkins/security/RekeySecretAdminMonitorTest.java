@@ -5,7 +5,6 @@ import com.gargoylesoftware.htmlunit.html.DomNodeUtil;
 import com.gargoylesoftware.htmlunit.html.HtmlButton;
 import com.gargoylesoftware.htmlunit.html.HtmlForm;
 import com.gargoylesoftware.htmlunit.html.HtmlPage;
-import com.trilead.ssh2.crypto.Base64;
 import hudson.FilePath;
 import hudson.Util;
 import hudson.util.Secret;
@@ -20,6 +19,12 @@ import javax.inject.Inject;
 import java.io.File;
 import java.io.IOException;
 import java.lang.annotation.Annotation;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
+import java.util.regex.Pattern;
+import java.util.stream.Stream;
+import org.hamcrest.MatcherAssert;
+import org.hamcrest.Matchers;
 
 /**
  * @author Kohsuke Kawaguchi
@@ -27,6 +32,8 @@ import java.lang.annotation.Annotation;
 public class RekeySecretAdminMonitorTest extends HudsonTestCase {
     @Inject
     RekeySecretAdminMonitor monitor;
+
+    final String plain_regex_match = ".*\\{[A-Za-z0-9+/]+={0,2}}.*";
 
     @Override
     protected void setUp() throws Exception {
@@ -46,7 +53,7 @@ public class RekeySecretAdminMonitorTest extends HudsonTestCase {
         super.recipe();
         recipes.add(new Runner() {
             @Override
-            public void setup(HudsonTestCase testCase, Annotation recipe) throws Exception {
+            public void setup(HudsonTestCase testCase, Annotation recipe) {
             }
 
             @Override
@@ -63,7 +70,7 @@ public class RekeySecretAdminMonitorTest extends HudsonTestCase {
             }
 
             @Override
-            public void tearDown(HudsonTestCase testCase, Annotation recipe) throws Exception {
+            public void tearDown(HudsonTestCase testCase, Annotation recipe) {
             }
         });
     }
@@ -76,8 +83,8 @@ public class RekeySecretAdminMonitorTest extends HudsonTestCase {
 
     private void verifyRewrite(File dir) throws Exception {
         File xml = new File(dir, "foo.xml");
-        assertEquals("<foo>" + encryptNew(TEST_KEY) + "</foo>".trim(),
-                FileUtils.readFileToString(xml).trim());
+        Pattern pattern = Pattern.compile("<foo>"+plain_regex_match+"</foo>");
+        MatcherAssert.assertThat(FileUtils.readFileToString(xml, StandardCharsets.UTF_8).trim(), Matchers.matchesRegex(pattern));
     }
 
     // TODO sometimes fails: "Invalid request submission: {json=[Ljava.lang.String;@2c46358e, .crumb=[Ljava.lang.String;@35661457}"
@@ -87,7 +94,7 @@ public class RekeySecretAdminMonitorTest extends HudsonTestCase {
         WebClient wc = createWebClient();
 
         // one should see the warning. try scheduling it
-        assertTrue(!monitor.isScanOnBoot());
+        assertFalse(monitor.isScanOnBoot());
         HtmlForm form = getRekeyForm(wc);
         submit(form, "schedule");
         assertTrue(monitor.isScanOnBoot());
@@ -95,7 +102,7 @@ public class RekeySecretAdminMonitorTest extends HudsonTestCase {
         assertTrue(getButton(form, 1).isDisabled());
 
         // run it now
-        assertTrue(!monitor.getLogFile().exists());
+        assertFalse(monitor.getLogFile().exists());
         submit(form, "background");
         assertTrue(monitor.getLogFile().exists());
 
@@ -126,7 +133,18 @@ public class RekeySecretAdminMonitorTest extends HudsonTestCase {
     }
 
     private HtmlButton getButton(HtmlForm form, int index) {
-        return form.<HtmlButton>getHtmlElementsByTagName("button").get(index);
+        // due to the removal of method HtmlElement.getHtmlElementsByTagName
+        Stream<HtmlButton> buttonStream = form.getElementsByTagName("button").stream()
+                .filter(HtmlButton.class::isInstance)
+                .map(HtmlButton.class::cast);
+
+        if (index > 0) {
+            buttonStream = buttonStream.skip(index - 1);
+        }
+        
+        return buttonStream
+                .findFirst()
+                .orElse(null);
     }
 
     public void testScanOnBoot() throws Exception {
@@ -134,7 +152,7 @@ public class RekeySecretAdminMonitorTest extends HudsonTestCase {
 
         // scan on boot should have run the scan
         assertTrue(monitor.getLogFile().exists());
-        assertTrue("scan on boot should have turned this off",!monitor.isScanOnBoot());
+        assertFalse("scan on boot should have turned this off", monitor.isScanOnBoot());
 
         // and data should be migrated
         verifyRewrite(jenkins.getRootDir());
@@ -148,7 +166,7 @@ public class RekeySecretAdminMonitorTest extends HudsonTestCase {
     private String encryptOld(String str) throws Exception {
         Cipher cipher = Secret.getCipher("AES");
         cipher.init(Cipher.ENCRYPT_MODE, Util.toAes128Key(TEST_KEY));
-        return new String(Base64.encode(cipher.doFinal((str + "::::MAGIC::::").getBytes("UTF-8"))));
+        return new String(Base64.getEncoder().encode(cipher.doFinal((str + "::::MAGIC::::").getBytes(StandardCharsets.UTF_8))));
     }
 
     private String encryptNew(String str) {

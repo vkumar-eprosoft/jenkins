@@ -28,28 +28,45 @@ import hudson.Launcher;
 import hudson.Proc;
 import hudson.Util;
 import hudson.EnvVars;
+import hudson.Functions;
 import hudson.model.AbstractBuild;
 import hudson.model.BuildListener;
 import hudson.model.Node;
+import hudson.model.Result;
 import hudson.model.TaskListener;
 import hudson.remoting.ChannelClosedException;
+import jenkins.tasks.filters.EnvVarsFilterLocalRule;
+import jenkins.tasks.filters.EnvVarsFilterableBuilder;
+import jenkins.tasks.filters.EnvVarsFilterException;
+import org.kohsuke.accmod.Restricted;
+import org.kohsuke.accmod.restrictions.Beta;
+import org.kohsuke.accmod.restrictions.NoExternalUse;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-import javax.annotation.Nonnull;
+import edu.umd.cs.findbugs.annotations.NonNull;
 
 /**
  * Common part between {@link Shell} and {@link BatchFile}.
  * 
  * @author Kohsuke Kawaguchi
  */
-public abstract class CommandInterpreter extends Builder {
+public abstract class CommandInterpreter extends Builder implements EnvVarsFilterableBuilder {
     /**
      * Command to execute. The format depends on the actual {@link CommandInterpreter} implementation.
      */
     protected final String command;
+
+    /**
+     * List of configured environment filter rules
+     */
+    @Restricted(Beta.class)
+    protected List<EnvVarsFilterLocalRule> configuredLocalRules = new ArrayList<>();
 
     public CommandInterpreter(String command) {
         this.command = command;
@@ -59,9 +76,31 @@ public abstract class CommandInterpreter extends Builder {
         return command;
     }
 
+    public @NonNull List<EnvVarsFilterLocalRule> buildEnvVarsFilterRules() {
+        return configuredLocalRules == null ? Collections.emptyList() : new ArrayList<>(configuredLocalRules);
+    }
+
+    // used by Jelly view
+    @Restricted(NoExternalUse.class)
+    public List<EnvVarsFilterLocalRule> getConfiguredLocalRules() {
+        return configuredLocalRules == null ? Collections.emptyList() : configuredLocalRules;
+    }
+
     @Override
     public boolean perform(AbstractBuild<?,?> build, Launcher launcher, BuildListener listener) throws InterruptedException {
         return perform(build,launcher,(TaskListener)listener);
+    }
+
+    /**
+     * Determines whether a non-zero exit code from the process should change the build
+     * status to {@link Result#UNSTABLE} instead of default {@link Result#FAILURE}.
+     *
+     * Changing to {@link Result#UNSTABLE} does not abort the build, next steps are continued.
+     *
+     * @since 2.26
+     */
+    protected boolean isErrorlevelForUnstableBuild(int exitCode) {
+        return false;
     }
 
     public boolean perform(AbstractBuild<?,?> build, Launcher launcher, TaskListener listener) throws InterruptedException {
@@ -80,7 +119,7 @@ public abstract class CommandInterpreter extends Builder {
                 script = createScriptFile(ws);
             } catch (IOException e) {
                 Util.displayIOException(e,listener);
-                e.printStackTrace(listener.fatalError(Messages.CommandInterpreter_UnableToProduceScript()));
+                Functions.printStackTrace(e, listener.fatalError(Messages.CommandInterpreter_UnableToProduceScript()));
                 return false;
             }
 
@@ -92,10 +131,29 @@ public abstract class CommandInterpreter extends Builder {
                 for(Map.Entry<String,String> e : build.getBuildVariables().entrySet())
                     envVars.put(e.getKey(),e.getValue());
 
-                r = join(launcher.launch().cmds(buildCommandLine(script)).envs(envVars).stdout(listener).pwd(ws).start());
+                launcher.prepareFilterRules(build, this);
+
+                Launcher.ProcStarter procStarter = launcher.launch();
+                procStarter.cmds(buildCommandLine(script))
+                        .envs(envVars)
+                        .stdout(listener)
+                        .pwd(ws);
+
+                try {
+                    Proc proc = procStarter.start();
+                    r = join(proc);
+                } catch (EnvVarsFilterException se) {
+                    LOGGER.log(Level.FINE, "Environment variable filtering failed", se);
+                    return false;
+                }
+
+                if(isErrorlevelForUnstableBuild(r)) {
+                    build.setResult(Result.UNSTABLE);
+                    r = 0;
+                }
             } catch (IOException e) {
                 Util.displayIOException(e, listener);
-                e.printStackTrace(listener.fatalError(Messages.CommandInterpreter_CommandFailed()));
+                Functions.printStackTrace(e, listener.fatalError(Messages.CommandInterpreter_CommandFailed()));
             }
             return r==0;
         } finally {
@@ -114,10 +172,10 @@ public abstract class CommandInterpreter extends Builder {
                     LOGGER.log(Level.FINE, "Script deletion failed", e);
                 } else {
                     Util.displayIOException(e,listener);
-                    e.printStackTrace( listener.fatalError(Messages.CommandInterpreter_UnableToDelete(script)) );
+                    Functions.printStackTrace(e, listener.fatalError(Messages.CommandInterpreter_UnableToDelete(script)));
                 }
             } catch (Exception e) {
-                e.printStackTrace( listener.fatalError(Messages.CommandInterpreter_UnableToDelete(script)) );
+                Functions.printStackTrace(e, listener.fatalError(Messages.CommandInterpreter_UnableToDelete(script)));
             }
         }
     }
@@ -127,7 +185,8 @@ public abstract class CommandInterpreter extends Builder {
      *
      * This allows subtypes to treat the exit code differently (for example by treating non-zero exit code
      * as if it's zero, or to set the status to {@link Result#UNSTABLE}). Any non-zero exit code will cause
-     * the build step to fail.
+     * the build step to fail. Use {@link #isErrorlevelForUnstableBuild(int exitCode)} to redefine the default
+     * behaviour.
      *
      * @since 1.549
      */
@@ -138,8 +197,8 @@ public abstract class CommandInterpreter extends Builder {
     /**
      * Creates a script file in a temporary name in the specified directory.
      */
-    public FilePath createScriptFile(@Nonnull FilePath dir) throws IOException, InterruptedException {
-        return dir.createTextTempFile("hudson", getFileExtension(), getContents(), false);
+    public FilePath createScriptFile(@NonNull FilePath dir) throws IOException, InterruptedException {
+        return dir.createTextTempFile("jenkins", getFileExtension(), getContents(), false);
     }
 
     public abstract String[] buildCommandLine(FilePath script);

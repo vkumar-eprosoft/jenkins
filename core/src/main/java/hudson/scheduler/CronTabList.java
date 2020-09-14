@@ -28,8 +28,8 @@ import java.util.Calendar;
 import java.util.TimeZone;
 import java.util.Collection;
 import java.util.Vector;
-import javax.annotation.CheckForNull;
-import javax.annotation.Nonnull;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
+import edu.umd.cs.findbugs.annotations.NonNull;
 
 import org.kohsuke.accmod.Restricted;
 import org.kohsuke.accmod.restrictions.NoExternalUse;
@@ -92,11 +92,11 @@ public final class CronTabList {
         return null;
     }
 
-    public static CronTabList create(@Nonnull String format) throws ANTLRException {
+    public static CronTabList create(@NonNull String format) throws ANTLRException {
         return create(format,null);
     }
 
-    public static CronTabList create(@Nonnull String format, Hash hash) throws ANTLRException {
+    public static CronTabList create(@NonNull String format, Hash hash) throws ANTLRException {
         Vector<CronTab> r = new Vector<>();
         int lineNumber = 0;
         String timezone = null;
@@ -106,11 +106,12 @@ public final class CronTabList {
             line = line.trim();
             
             if(lineNumber == 1 && line.startsWith("TZ=")) {
-                timezone = getValidTimezone(line.replace("TZ=",""));
+                final String timezoneString = line.replace("TZ=", "");
+                timezone = getValidTimezone(timezoneString);
                 if(timezone != null) {
-                    LOGGER.log(Level.CONFIG, "cron with timezone {0}", timezone);
+                    LOGGER.log(Level.CONFIG, "CRON with timezone {0}", timezone);
                 } else {
-                    LOGGER.log(Level.CONFIG, "invalid timezone {0}", line);
+                    throw new ANTLRException("Invalid or unsupported timezone '" + timezoneString + "'");
                 }
                 continue;
             }
@@ -131,7 +132,7 @@ public final class CronTabList {
     public @CheckForNull Calendar previous() {
         Calendar nearest = null;
         for (CronTab tab : tabs) {
-            Calendar scheduled = tab.floor(Calendar.getInstance());
+            Calendar scheduled = tab.floor(tab.getTimeZone() == null ? Calendar.getInstance() : Calendar.getInstance(tab.getTimeZone()));
             if (nearest == null || nearest.before(scheduled)) {
                 nearest = scheduled;
             }
@@ -143,7 +144,7 @@ public final class CronTabList {
     public @CheckForNull Calendar next() {
         Calendar nearest = null;
         for (CronTab tab : tabs) {
-            Calendar scheduled = tab.ceil(Calendar.getInstance());
+            Calendar scheduled = tab.ceil(tab.getTimeZone() == null ? Calendar.getInstance() : Calendar.getInstance(tab.getTimeZone()));
             if (nearest == null || nearest.after(scheduled)) {
                 nearest = scheduled;
             }

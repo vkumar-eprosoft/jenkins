@@ -25,6 +25,8 @@ package hudson.model;
 
 import hudson.Extension;
 import jenkins.model.Jenkins;
+import org.jenkins.ui.icon.Icon;
+import org.jenkins.ui.icon.IconSet;
 import org.jenkinsci.Symbol;
 import jenkins.model.item_category.StandaloneProjectsCategory;
 import org.kohsuke.accmod.Restricted;
@@ -55,7 +57,7 @@ public class FreeStyleProject extends Project<FreeStyleProject,FreeStyleBuild> i
     }
 
     public DescriptorImpl getDescriptor() {
-        return (DescriptorImpl)Jenkins.getInstance().getDescriptorOrDie(getClass());
+        return (DescriptorImpl)Jenkins.get().getDescriptorOrDie(getClass());
     }
 
     /**
@@ -65,6 +67,7 @@ public class FreeStyleProject extends Project<FreeStyleProject,FreeStyleBuild> i
      * @deprecated as of 2.0
      *      Use injection
      */
+    @Deprecated
     @Restricted(NoExternalUse.class)
     public static /*almost final*/ DescriptorImpl DESCRIPTOR;
 
@@ -97,5 +100,16 @@ public class FreeStyleProject extends Project<FreeStyleProject,FreeStyleBuild> i
             return (Jenkins.RESOURCE_PATH + "/images/:size/freestyleproject.png").replaceFirst("^/", "");
         }
 
+        @Override
+        public String getIconClassName() {
+            return "icon-freestyle-project";
+        }
+
+        static {
+            IconSet.icons.addIcon(new Icon("icon-freestyle-project icon-sm", "16x16/freestyleproject.png", Icon.ICON_SMALL_STYLE));
+            IconSet.icons.addIcon(new Icon("icon-freestyle-project icon-md", "24x24/freestyleproject.png", Icon.ICON_MEDIUM_STYLE));
+            IconSet.icons.addIcon(new Icon("icon-freestyle-project icon-lg", "32x32/freestyleproject.png", Icon.ICON_LARGE_STYLE));
+            IconSet.icons.addIcon(new Icon("icon-freestyle-project icon-xlg", "48x48/freestyleproject.png", Icon.ICON_XLARGE_STYLE));
+        }
     }
 }

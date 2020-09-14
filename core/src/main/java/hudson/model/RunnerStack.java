@@ -28,7 +28,7 @@ import hudson.model.Run.RunExecution;
 import java.util.Stack;
 import java.util.Map;
 import java.util.WeakHashMap;
-import javax.annotation.CheckForNull;
+import edu.umd.cs.findbugs.annotations.CheckForNull;
 
 /**
  * Keeps track of {@link RunExecution}s that are currently executing on the given thread
@@ -38,12 +38,11 @@ import javax.annotation.CheckForNull;
  * @since 1.319
  */
 final class RunnerStack {
-    private final Map<Executor,Stack<RunExecution>> stack = new WeakHashMap<Executor,Stack<RunExecution>>();
+    private final Map<Executor,Stack<RunExecution>> stack = new WeakHashMap<>();
 
     synchronized void push(RunExecution r) {
         Executor e = Executor.currentExecutor();
-        Stack<RunExecution> s = stack.get(e);
-        if(s==null) stack.put(e,s=new Stack<RunExecution>());
+        Stack<RunExecution> s = stack.computeIfAbsent(e, k -> new Stack<>());
         s.push(r);
     }
 

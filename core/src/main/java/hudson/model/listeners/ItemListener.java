@@ -27,14 +27,13 @@ import com.google.common.base.Function;
 import hudson.ExtensionPoint;
 import hudson.ExtensionList;
 import hudson.Extension;
+import hudson.model.Failure;
 import hudson.model.Item;
 import hudson.model.ItemGroup;
 import hudson.model.Items;
 import hudson.security.ACL;
-import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-import jenkins.security.NotReallyRoleSensitiveCallable;
 
 /**
  * Receives notifications about CRUD operations of {@link Item}.
@@ -54,6 +53,18 @@ public class ItemListener implements ExtensionPoint {
      * For example, you can enable/add builders, etc.
      */
     public void onCreated(Item item) {
+    }
+
+    /**
+     * Called before a job is copied into a new parent, providing the ability to veto the copy operation before it
+     * starts.
+     *
+     * @param src the item being copied
+     * @param parent the proposed parent
+     * @throws Failure to veto the operation.
+     * @since 2.51
+     */
+    public void onCheckCopy(Item src, ItemGroup parent) throws Failure {
     }
 
     /**
@@ -136,7 +147,7 @@ public class ItemListener implements ExtensionPoint {
 
     /**
      * @since 1.446
-     *      Called at the begenning of the orderly shutdown sequence to
+     *      Called at the beginning of the orderly shutdown sequence to
      *      allow plugins to clean up stuff
      */
     public void onBeforeShutdown() {
@@ -172,39 +183,60 @@ public class ItemListener implements ExtensionPoint {
     }
 
     public static void fireOnCopied(final Item src, final Item result) {
-        forAll(new Function<ItemListener,Void>() {
-            @Override public Void apply(ItemListener l) {
+        forAll(l -> {
+            if (l != null) {
                 l.onCopied(src, result);
-                return null;
             }
+            return null;
         });
     }
 
-    public static void fireOnCreated(final Item item) {
-        forAll(new Function<ItemListener,Void>() {
-            @Override public Void apply(ItemListener l) {
-                l.onCreated(item);
-                return null;
+    /**
+     * Call before a job is copied into a new parent, to allow the {@link ItemListener} implementations the ability
+     * to veto the copy operation before it starts.
+     *
+     * @param src    the item being copied
+     * @param parent the proposed parent
+     * @throws Failure if the copy operation has been vetoed.
+     * @since 2.51
+     */
+    public static void checkBeforeCopy(final Item src, final ItemGroup parent) throws Failure {
+        for (ItemListener l : all()) {
+            try {
+                l.onCheckCopy(src, parent);
+            } catch (Failure e) {
+                throw e;
+            } catch (RuntimeException x) {
+                LOGGER.log(Level.WARNING, "failed to send event to listener of " + l.getClass(), x);
             }
+        }
+    }
+
+    public static void fireOnCreated(final Item item) {
+        forAll(l -> {
+            if (l != null) {
+                l.onCreated(item);
+            }
+            return null;
         });
     }
 
     public static void fireOnUpdated(final Item item) {
-        forAll(new Function<ItemListener,Void>() {
-            @Override public Void apply(ItemListener l) {
+        forAll(l -> {
+            if (l != null) {
                 l.onUpdated(item);
-                return null;
             }
+            return null;
         });
     }
 
     /** @since 1.548 */
     public static void fireOnDeleted(final Item item) {
-        forAll(new Function<ItemListener,Void>() {
-            @Override public Void apply(ItemListener l) {
+        forAll(l -> {
+            if (l != null) {
                 l.onDeleted(item);
-                return null;
             }
+            return null;
         });
     }
 
@@ -226,34 +258,30 @@ public class ItemListener implements ExtensionPoint {
             final String oldName = oldFullName.substring(prefixS);
             final String newName = rootItem.getName();
             assert newName.equals(newFullName.substring(prefixS));
-            forAll(new Function<ItemListener, Void>() {
-                @Override public Void apply(ItemListener l) {
+            forAll(l -> {
+                if (l != null) {
                     l.onRenamed(rootItem, oldName, newName);
-                    return null;
                 }
+                return null;
             });
         }
-        forAll(new Function<ItemListener, Void>() {
-            @Override public Void apply(ItemListener l) {
+        forAll(l -> {
+            if (l!= null) {
                 l.onLocationChanged(rootItem, oldFullName, newFullName);
-                return null;
             }
+            return null;
         });
         if (rootItem instanceof ItemGroup) {
-            for (final Item child : ACL.impersonate(ACL.SYSTEM, new NotReallyRoleSensitiveCallable<List<Item>,RuntimeException>() {
-                @Override public List<Item> call() {
-                    return Items.getAllItems((ItemGroup) rootItem, Item.class);
-                }
-            })) {
+            for (final Item child : Items.allItems(ACL.SYSTEM, (ItemGroup)rootItem, Item.class)) {
                 final String childNew = child.getFullName();
                 assert childNew.startsWith(newFullName);
                 assert childNew.charAt(newFullName.length()) == '/';
                 final String childOld = oldFullName + childNew.substring(newFullName.length());
-                forAll(new Function<ItemListener, Void>() {
-                    @Override public Void apply(ItemListener l) {
+                forAll(l -> {
+                    if (l != null) {
                         l.onLocationChanged(child, childOld, childNew);
-                        return null;
                     }
+                    return null;
                 });
             }
         }

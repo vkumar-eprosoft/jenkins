@@ -23,22 +23,26 @@
  */
 package hudson.model;
 
+import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertNotSame;
+import static org.hamcrest.MatcherAssert.assertThat;
 
 import com.gargoylesoftware.htmlunit.html.HtmlForm;
 import com.gargoylesoftware.htmlunit.html.HtmlPage;
-import edu.umd.cs.findbugs.annotations.SuppressWarnings;
 import hudson.tasks.Builder;
 import hudson.tasks.Shell;
 import java.io.ByteArrayInputStream;
 
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.experimental.categories.Category;
+import org.jvnet.hudson.test.FailureBuilder;
 import org.jvnet.hudson.test.Issue;
 import org.jvnet.hudson.test.JenkinsRule;
 import org.jvnet.hudson.test.JenkinsRule.WebClient;
+import org.jvnet.hudson.test.SmokeTest;
 
 import java.util.List;
 import java.io.File;
@@ -46,6 +50,7 @@ import java.io.File;
 /**
  * @author Kohsuke Kawaguchi
  */
+@Category(SmokeTest.class)
 public class FreeStyleProjectTest {
 
     @Rule
@@ -73,7 +78,7 @@ public class FreeStyleProjectTest {
         assertEquals(1,builders.size());
         assertEquals(Shell.class,builders.get(0).getClass());
         assertEquals("echo hello",((Shell)builders.get(0)).getCommand().trim());
-        assertTrue(builders.get(0)!=shell);
+        assertNotSame(builders.get(0), shell);
     }
 
     /**
@@ -107,7 +112,6 @@ public class FreeStyleProjectTest {
 
     @Test
     @Issue("JENKINS-15817")
-    @SuppressWarnings("DM_DEFAULT_ENCODING")
     public void minimalConfigXml() throws Exception {
         // Make sure it can be created without exceptions:
         FreeStyleProject project = (FreeStyleProject) j.jenkins.createProjectFromXML("stuff", new ByteArrayInputStream("<project/>".getBytes()));
@@ -123,7 +127,29 @@ public class FreeStyleProjectTest {
         assertEquals(1,builders.size());
         assertEquals(Shell.class,builders.get(0).getClass());
         assertEquals("echo hello",((Shell)builders.get(0)).getCommand().trim());
-        assertTrue(builders.get(0)!=shell);
+        assertNotSame(builders.get(0), shell);
         System.out.println(project.getConfigFile().asString());
+    }
+
+    @Test
+    @Issue("JENKINS-36629")
+    public void buildStabilityReports() throws Exception {
+        for (int i = 0; i <= 32; i++) {
+            FreeStyleProject p = j.createFreeStyleProject(String.format("Pattern-%s", Integer.toBinaryString(i)));
+            int expectedFails = 0;
+            for (int j = 32; j >= 1; j = j / 2) {
+                p.getBuildersList().clear();
+                if ((i & j) == j) {
+                    p.getBuildersList().add(new FailureBuilder());
+                    if (j <= 16) {
+                        expectedFails++;
+                    }
+                }
+                p.scheduleBuild2(0).get();
+            }
+            HealthReport health = p.getBuildHealth();
+
+            assertThat(String.format("Pattern %s score", Integer.toBinaryString(i)), health.getScore(), is(100*(5-expectedFails)/5));
+        }
     }
 }
